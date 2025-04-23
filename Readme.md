@@ -119,6 +119,13 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 
 *(Note: If running manually, ensure Python 3.x and pip are installed.)*
 
+## Roadmap
+
+This is still in early development but there are some improvements I want to make soon.
+* Improving visability on progress.
+* Duplicate removal.
+* Potentially moving from xxh64 to xxh3.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a pull request or open an issue for bugs, feature requests, or improvements.
