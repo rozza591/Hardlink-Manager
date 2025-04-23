@@ -1,4 +1,4 @@
-# Hardlink Manager
+![hardlink-manager-banner](https://github.com/user-attachments/assets/510986dd-9172-4ab1-b534-8e2764b74ed7)
 
 ## Overview
 
