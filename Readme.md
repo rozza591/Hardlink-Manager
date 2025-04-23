@@ -20,10 +20,13 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 * **Docker Support:** Includes a `docker-compose.yml` for easy containerized deployment.
 * **Verification (Post-Dry Run):** After linking (initiated via the UI post-dry run), it verifies if the links were created successfully.
 
-## Screenshot (Placeholder)
+## Light and Dark mode for WebUI
 
-*(Add a screenshot of the web interface here)*
-`![Hardlink Manager UI](link_to_screenshot.png)`
+<img width="1920" alt="Screenshot 2025-04-23 at 11 39 09" src="https://github.com/user-attachments/assets/f3b06f17-0e3e-48c6-bd07-80616eed1ddf" />
+
+
+<img width="1920" alt="Screenshot 2025-04-23 at 11 39 18" src="https://github.com/user-attachments/assets/add8fbd7-25c9-40a7-bbb0-63a7a06001a8" />
+
 
 ## Technology Stack
 
