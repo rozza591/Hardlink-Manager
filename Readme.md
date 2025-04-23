@@ -34,7 +34,7 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 ### Using Docker (Recommended)
 
 1.  **Prerequisites:** Docker and Docker Compose installed.
-2.  **Configure Volume:** Edit the `docker-compose.yml` file[cite: 1]. Change the `source` path in the `volumes` section to the directory on your *host* machine that you want the container to access. The `target` should generally remain `/data`, as this is the path you will use within the application's UI.
+2.  **Configure Volume:** Edit the `docker-compose.yml` file. Change the `source` path in the `volumes` section to the directory on your *host* machine that you want the container to access. The `target` should generally remain `/data`, as this is the path you will use within the application's UI.
 
     ```yaml
     # docker-compose.yml
@@ -65,11 +65,11 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 ### Manual Setup (Optional)
 
 1.  **Prerequisites:** Python 3.x and pip installed.
-2.  **Install Dependencies:** Navigate to the project directory and install the required Python packages from `requirements.txt`[cite: 1]:
+2.  **Install Dependencies:** Navigate to the project directory and install the required Python packages from `requirements.txt`:
     ```bash
     pip install -r requirements.txt
     ```
-3.  **Run the App:** Execute the Flask application script `app.py`[cite: 1]:
+3.  **Run the App:** Execute the Flask application script `app.py`:
     ```bash
     python app.py
     ```
@@ -103,13 +103,13 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 
 ## How It Works
 
-1.  **File Discovery:** Recursively scans the target directory, ignoring symbolic links initially[cite: 1].
-2.  **Size Grouping:** Groups files by size. Only files with identical, non-zero sizes are considered potential duplicates[cite: 1].
-3.  **Hashing:** Calculates the 64-bit xxHash for each file in the potential duplicate size groups using parallel processing[cite: 1]. Files with the same size *and* the same hash are considered duplicates[cite: 1].
-4.  **Inode Check (Internal):** Although the hash is displayed, the application still checks inodes internally to identify sets that are *already* hardlinked[cite: 1].
-5.  **Reporting (Dry Run):** In Dry Run mode, reports the findings (duplicate sets, hashes, already linked status, potential savings) without altering files[cite: 1].
-6.  **Linking (Optional):** If linking is requested, selects one file per duplicate set as the 'original' and replaces the other identical files with hard or soft links. It attempts to delete the duplicate file before creating the link[cite: 1].
-7.  **Verification (After UI Link):** After linking via the UI, verifies hard links by checking inodes and soft links by resolving targets[cite: 1].
+1.  **File Discovery:** Recursively scans the target directory, ignoring symbolic links initially.
+2.  **Size Grouping:** Groups files by size. Only files with identical, non-zero sizes are considered potential duplicates.
+3.  **Hashing:** Calculates the 64-bit xxHash for each file in the potential duplicate size groups using parallel processing. Files with the same size *and* the same hash are considered duplicates.
+4.  **Inode Check (Internal):** Although the hash is displayed, the application still checks inodes internally to identify sets that are *already* hardlinked.
+5.  **Reporting (Dry Run):** In Dry Run mode, reports the findings (duplicate sets, hashes, already linked status, potential savings) without altering files.
+6.  **Linking (Optional):** If linking is requested, selects one file per duplicate set as the 'original' and replaces the other identical files with hard or soft links. It attempts to delete the duplicate file before creating the link.
+7.  **Verification (After UI Link):** After linking via the UI, verifies hard links by checking inodes and soft links by resolving targets.
 
 ## Dependencies
 
