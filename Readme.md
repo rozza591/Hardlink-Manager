@@ -113,9 +113,9 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 
 ## Dependencies
 
-* Flask [cite: 1]
-* xxhash [cite: 1]
-* *(pdfkit was removed)* [cite: 1]
+* Flask
+* xxhash
+* *(pdfkit was removed)*
 
 *(Note: If running manually, ensure Python 3.x and pip are installed.)*
 
