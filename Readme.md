@@ -28,12 +28,6 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 <img width="1920" alt="Screenshot 2025-04-23 at 11 39 18" src="https://github.com/user-attachments/assets/add8fbd7-25c9-40a7-bbb0-63a7a06001a8" />
 
 
-## Technology Stack
-
-* **Backend:** Python, Flask
-* **Hashing:** xxhash
-* **Frontend:** HTML, CSS, JavaScript (Vanilla)
-* **Containerization:** Docker, Docker Compose
 
 ## Setup & Running
 
