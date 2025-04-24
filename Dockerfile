@@ -6,6 +6,7 @@ WORKDIR /app
 # Install system dependencies including jdupes
 RUN apt-get update && \
     apt-get install -y jdupes && \
+#I cant see jdupes being used in the flask app at all 👀
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
