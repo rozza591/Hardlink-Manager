@@ -8,8 +8,8 @@ Hardlink Manager is a web-based tool designed to find duplicate files within a s
 
 * **Duplicate File Detection:** Identifies duplicate files based on file size first, followed by xxHash hashing for confirmation.
 * **Linking Options:**
-    * **Hard Linking:** Replaces duplicate files with hard links pointing to a single original file inode.
-    * **Soft Linking (Symbolic Links):** Replaces duplicate files with symbolic links pointing to the path of the original file.
+    * **Hard Linking:** Replaces duplicate files with hard links pointing to a single original file inode. Note: Hardlinks can only be create for regular files (so no directories) and they cannot span across filesystems or shares. E.g you cannot hard link a file in /mnt/user/photos to /mnt/user/backup.
+    * **Soft Linking (Symbolic Links):** Replaces duplicate files with symbolic (shortcut) links pointing to the path of the original file. If the original file is deleted then the soft link is broken.
 * **Dry Run Mode:** Allows scanning and viewing potential duplicates (with hashes) and space savings without making any changes to the filesystem.
 * **Space Savings Calculation:** Reports the potential or actual disk space saved by linking duplicates.
 * **Web Interface:** Provides an easy-to-use web UI built with Flask for managing scans and viewing results.

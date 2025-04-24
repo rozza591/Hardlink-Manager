@@ -5,7 +5,6 @@ WORKDIR /app
 
 # Install system dependencies including jdupes
 RUN apt-get update && \
-    apt-get install -y jdupes && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
