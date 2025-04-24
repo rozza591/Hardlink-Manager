@@ -125,6 +125,7 @@ This is still in early development but there are some improvements I want to mak
 * Improving visability on progress.
 * Duplicate removal.
 * Potentially moving from xxh64 to xxh3.
+* Adding task ID to URL.
 
 ## Contributing
 
