@@ -5,7 +5,7 @@ import xxhash
 import json
 import multiprocessing
 import stat
-import psutil
+# import psutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
@@ -78,20 +78,22 @@ def update_progress(progress_dict, key, updates):
 
 def get_memory_usage_percent():
     """Returns the current system memory usage percentage."""
-    try:
-        return psutil.virtual_memory().percent
-    except:
-        return 0
+    return 0 # Disabled for debugging Unraid crash
+    # try:
+    #     return psutil.virtual_memory().percent
+    # except:
+    #     return 0
 
 def check_memory_and_warn(scan_id, progress_dict=None):
     """Checks RAM usage and logs warnings if it exceeds 80%."""
-    mem_percent = get_memory_usage_percent()
-    if mem_percent > 80:
-        msg = f"WARNING: High memory usage ({mem_percent}%). Efficiency may decrease."
-        logging.warning(f"[Scan {scan_id}] {msg}")
-        if progress_dict:
-            update_progress(progress_dict, scan_id, {"status": f"Low Memory: {mem_percent}%"})
-    return mem_percent
+    return 0 # Disabled for debugging
+    # mem_percent = get_memory_usage_percent()
+    # if mem_percent > 80:
+    #     msg = f"WARNING: High memory usage ({mem_percent}%). Efficiency may decrease."
+    #     logging.warning(f"[Scan {scan_id}] {msg}")
+    #     if progress_dict:
+    #         update_progress(progress_dict, scan_id, {"status": f"Low Memory: {mem_percent}%"})
+    # return mem_percent
 
 def is_ignored(filepath, ignore_dirs, ignore_exts):
     """
