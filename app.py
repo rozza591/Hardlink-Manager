@@ -19,7 +19,12 @@ logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(pro
 # --- Shared State using Multiprocessing Manager ---
 # This allows different processes (web server and background tasks) to share data safely.
 if 'manager' not in globals():
-     manager = multiprocessing.Manager()
+    # Force 'fork' method for Linux/Docker compatibility (fixes silent failures)
+    try:
+        multiprocessing.set_start_method('fork')
+    except RuntimeError:
+        pass # Context already set
+    manager = multiprocessing.Manager()
 
 progress_info = manager.dict()  # Stores progress updates for ongoing scans {scan_id: {status, phase, ...}}
 scan_results = manager.dict()   # Stores final results of completed scans {scan_id: {summary, duplicates, ...}}
