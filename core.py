@@ -93,6 +93,21 @@ def check_memory_and_warn(scan_id, progress_dict=None):
             update_progress(progress_dict, scan_id, {"status": f"Low Memory: {mem_percent}%"})
     return mem_percent
 
+def is_ignored(filepath, ignore_dirs, ignore_exts):
+    """
+    Checks if a file should be ignored based on directory names or file extension.
+    """
+    # Check extension
+    if any(filepath.lower().endswith(ext) for ext in ignore_exts):
+        return True
+        
+    # Check if any part of the path matches an ignored directory
+    parts = filepath.split(os.sep)
+    if any(d in parts for d in ignore_dirs):
+        return True
+        
+    return False
+
 def save_results_to_file(scan_id, results_data, output_dir):
      """
      Saves the scan results (summary and duplicate list, excluding raw data)
@@ -213,7 +228,7 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
     summary = { "action_taken": action_taken, "files_linked": files_linked, "files_failed": files_failed, "op_name": link_op_name }
     return summary
 
-def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed):
+def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None):
     """
     The main function executed in a separate process to perform the scan and optional linking.
     """
@@ -229,17 +244,28 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
         total_files_found = 0; total_bytes_scanned = 0
         update_progress(progress_info_managed, scan_id, {"phase": "Finding Files", "status": "Walking directory..."})
 
+        if ignore_dirs is None: ignore_dirs = []
+        if ignore_exts is None: ignore_exts = []
+        
+        # Clean extensions (ensure they start with dot and are lowercase)
+        clean_ignore_exts = [e.lower() if e.startswith('.') else f'.{e.lower()}' for e in ignore_exts]
+        
         # Iterate through the top-level entries in the target directory
         for entry in os.scandir(path1):
+            if entry.name in ignore_dirs: continue # Skip top-level ignored dirs
             if entry.is_dir(follow_symlinks=False):
                  # Recursively walk through subdirectories
-                 for dirpath, _, filenames in os.walk(entry.path):
-                      # Update progress periodically for large directories
-                      relative_dir = os.path.relpath(dirpath, path1)
-                      status_update = f"Found {total_files_found} files. Scanning: .{os.sep}{relative_dir}"
-                      if total_files_found % 100 == 0: update_progress(progress_info_managed, scan_id, {"status": status_update, "processed_items": total_files_found})
-                      for filename in filenames:
+                 for dirpath, dirs, filenames in os.walk(entry.path):
+                     # Modify dirs in-place to skip ignored directories during walk
+                     dirs[:] = [d for d in dirs if d not in ignore_dirs]
+                     
+                     # Update progress periodically for large directories
+                     relative_dir = os.path.relpath(dirpath, path1)
+                     status_update = f"Found {total_files_found} files. Scanning: .{os.sep}{relative_dir}"
+                     if total_files_found % 100 == 0: update_progress(progress_info_managed, scan_id, {"status": status_update, "processed_items": total_files_found})
+                     for filename in filenames:
                            filepath = os.path.join(dirpath, filename)
+                           if is_ignored(filepath, [], clean_ignore_exts): continue # Check ext (dirs handled above)
                            try:
                                # Use lstat to get info without following symlinks
                                stat_info = os.lstat(filepath)
@@ -260,6 +286,7 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
             elif entry.is_file(follow_symlinks=False):
                  # Handle files directly in the root scanning directory
                  filepath = entry.path
+                 if is_ignored(filepath, [], clean_ignore_exts): continue
                  try:
                      stat_info = entry.stat(follow_symlinks=False)
                      if stat.S_ISLNK(stat_info.st_mode): continue # Skip symlinks

@@ -42,7 +42,14 @@ def run_scan():
     path1 = request.form.get("path1"); # Target directory
     dry_run = "dryrun" in request.form # Is it a dry run?
     use_hardlinks = "hardlink" in request.form; use_softlinks = "softlink" in request.form # Link type selection
-    save_auto = "save_auto" in request.form # Auto-save results?
+    save_auto = "save_auto" in request.form
+    
+    # Parse ignore lists
+    ignore_dirs_str = request.form.get("ignore_dirs", "")
+    ignore_dirs = [d.strip() for d in ignore_dirs_str.split(",") if d.strip()]
+    
+    ignore_exts_str = request.form.get("ignore_exts", "")
+    ignore_exts = [e.strip() for e in ignore_exts_str.split(",") if e.strip()]
 
     # Determine link type (None if dry_run or no link type selected)
     link_type = None;
@@ -60,13 +67,14 @@ def run_scan():
     progress_info[scan_id] = {"status":"queued","phase":"queued","total_items":0,"processed_items":0, "percentage": 0}
     scan_results[scan_id] = None # Placeholder for results
 
-    logging.info(f"Queuing scan process {scan_id} for path: {path1} (Dry Run: {dry_run}, Link Type: {link_type}, Save Auto: {save_auto})")
+    logging.info(f"Queuing scan {scan_id} for path: {path1}. Ignoring dirs: {ignore_dirs}, exts: {ignore_exts}")
 
     # --- Create and Start Background Process ---
     process = multiprocessing.Process(
         target=run_manual_scan_and_link, # Function to run in the new process
-        args=(scan_id, path1, dry_run, link_type, save_auto, progress_info, scan_results), # Arguments for the target function
-        name=f"Scan-{scan_id[:6]}" # Give the process a descriptive name
+        # Pass the new ignore lists to the target function
+        args=(scan_id, path1, dry_run, link_type, save_auto, progress_info, scan_results, ignore_dirs, ignore_exts),
+        name=f"Scan-{scan_id[:6]}"
     )
     process.start() # Start the background process
 

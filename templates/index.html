@@ -372,16 +372,35 @@
             </div>
 
             <div class="form-group checkbox-group">
-                 <label>Operation:</label><br>
-                 <input type="checkbox" id="hardlink" name="hardlink" onclick="handleLinkTypeSelection(this)"> <label for="hardlink">Hard-Link Duplicates</label><br>
-                 <input type="checkbox" id="softlink" name="softlink" onclick="handleLinkTypeSelection(this)"> <label for="softlink">Soft-Link Duplicates</label><br>
-                 <input type="checkbox" id="dryrun" name="dryrun" checked onclick="handleDryRunSelection(this)"> <label for="dryrun">Dry Run (Report only)</label><br>
-                 <small>Select ONE option. Dry Run recommended first.</small>
+                 <div class="row">
+            <div class="column">
+                <input type="checkbox" id="hardlink" name="hardlink" checked>
+                <label for="hardlink">Use Hard Links (Recommended)</label>
             </div>
+            <div class="column">
+                <input type="checkbox" id="softlink" name="softlink">
+                <label for="softlink">Use Soft Links (Symbolic)</label>
+            </div>
+            <div class="column">
+                <input type="checkbox" id="dryrun" name="dryrun" checked>
+                <label for="dryrun">Dry Run (No changes)</label>
+            </div>
+            <div class="column">
+                <input type="checkbox" id="save_auto" name="save_auto">
+                <label for="save_auto">Auto-Save Results (JSON)</label>
+            </div>
+        </div>
 
-            <div class="form-group save-auto-group">
-                 <input type="checkbox" id="save-auto" name="save_auto"> <label for="save-auto">[Unattended Mode] Save results automatically to input directory</label><br>
-                 <small><strong>Warning:</strong> Ensure the server has write permission to the input directory. Saves JSON.</small>
+        <div class="row" style="margin-top: 15px;">
+            <div class="column">
+                 <label for="ignore_dirs">Ignore Directories (comma-separated):</label>
+                 <input type="text" id="ignore_dirs" name="ignore_dirs" placeholder="e.g. .git, tmp, node_modules">
+            </div>
+            <div class="column">
+                 <label for="ignore_exts">Ignore Extensions (comma-separated):</label>
+                 <input type="text" id="ignore_exts" name="ignore_exts" placeholder="e.g. .log, .tmp, .bak">
+            </div>
+        </div>
             </div>
 
             <div class="button-group">

@@ -80,6 +80,40 @@ def test_update_progress():
     assert mock_dict[key]["percent"] == 50
 
     
-    # Test overwriting update
+    # Test overwrite
     update_progress(mock_dict, key, {"status": "done"})
     assert mock_dict[key]["status"] == "done"
+
+def test_ignore_logic(tmp_path):
+    # Setup:
+    # root/
+    #   include.txt
+    #   ignore.log (bad ext)
+    #   ignore_dir/ (bad dir)
+    #     nested.txt
+    
+    root = tmp_path / "scan_root"
+    root.mkdir()
+    (root / "include.txt").write_text("content")
+    (root / "ignore.log").write_text("content")
+    
+    ign_dir = root / "ignore_dir"
+    ign_dir.mkdir()
+    (ign_dir / "nested.txt").write_text("content")
+    
+    # We will mock the scan function logic roughly here or just test the helper if we extract it.
+    # Since filter logic is embedded in run_manual_scan_and_link, let's integration test it 
+    # OR extract filter logic to a helper. 
+    # For now, let's assume we extract `is_ignored(path, ignore_dirs, ignore_exts)` helper in core.
+    
+    from core import is_ignored
+    
+    # Test Extension
+    assert is_ignored("path/to/ignore.log", [], [".log"]) == True
+    assert is_ignored("path/to/include.txt", [], [".log"]) == False
+    
+    # Test Directory (simple)
+    # Note: is_ignored usually checks full path against dir list? 
+    # Or strict dir name matching? Plan said "Directory name in ignore_dirs"
+    assert is_ignored("/path/to/ignore_dir/file.txt", ["ignore_dir"], []) == True
+    assert is_ignored("/path/to/clean/file.txt", ["ignore_dir"], []) == False
