@@ -5,6 +5,7 @@ import xxhash
 import json
 import multiprocessing
 import stat
+import psutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
@@ -74,6 +75,23 @@ def update_progress(progress_dict, key, updates):
     except Exception as e:
         # Log errors if updating progress fails
         logging.error(f"Error updating progress for key {key}: {e}")
+
+def get_memory_usage_percent():
+    """Returns the current system memory usage percentage."""
+    try:
+        return psutil.virtual_memory().percent
+    except:
+        return 0
+
+def check_memory_and_warn(scan_id, progress_dict=None):
+    """Checks RAM usage and logs warnings if it exceeds 80%."""
+    mem_percent = get_memory_usage_percent()
+    if mem_percent > 80:
+        msg = f"WARNING: High memory usage ({mem_percent}%). Efficiency may decrease."
+        logging.warning(f"[Scan {scan_id}] {msg}")
+        if progress_dict:
+            update_progress(progress_dict, scan_id, {"status": f"Low Memory: {mem_percent}%"})
+    return mem_percent
 
 def save_results_to_file(scan_id, results_data, output_dir):
      """
@@ -232,6 +250,12 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                                # Group files by size; only non-empty files are candidates for duplicates
                                if filesize > 0: files_by_size[filesize].append({'path': filepath, 'inode': fileinode}) # Store path and inode initially
                                total_files_found += 1
+                               
+                               # Memory check every 1000 files
+                               if total_files_found % 1000 == 0:
+                                   if check_memory_and_warn(scan_id, progress_info_managed) > 95:
+                                       raise MemoryError("Memory usage exceeded 95%. Aborting scan to prevent system crash.")
+                                       
                            except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
             elif entry.is_file(follow_symlinks=False):
                  # Handle files directly in the root scanning directory

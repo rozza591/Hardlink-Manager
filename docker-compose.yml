@@ -1,11 +1,19 @@
 services:
   web:
     build: .
+    restart: unless-stopped
     ports:
       - "5000:5000"
     volumes:
-      - type: bind
-        source: #add source directory
-        target: /data
+      # UNRAID TIP: Map direct disk paths (e.g. /mnt/cache/share) 
+      # instead of /mnt/user/share to bypass FUSE overhead for faster scans.
+      - /mnt/user/your_data:/data
     environment:
-      - LOG_LEVEL=DEBUG
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          # Change this value to ~80% of your system RAM.
+          # Example: If you have 16GB, set this to 12.8G.
+          memory: 4G
