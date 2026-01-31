@@ -158,6 +158,36 @@ small {
     box-sizing: border-box;
 }
 
+.size-input-group {
+    display: flex;
+    gap: 8px;
+}
+
+.size-input-group input[type="number"] {
+    flex: 1;
+    min-width: 60px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    padding: 8px;
+    box-sizing: border-box;
+}
+
+.size-input-group select {
+    width: 80px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    padding: 8px;
+    background-color: #fff;
+    cursor: pointer;
+}
+
+body.dark-mode .size-input-group input[type="number"],
+body.dark-mode .size-input-group select {
+    background-color: #495057;
+    border-color: #6c757d;
+    color: #e9ecef;
+}
+
 /* --- Button Styles --- */
 .button-group {
     margin-top: 10px;
@@ -232,6 +262,27 @@ button:disabled {
     justify-content: center;
     transition: background-color 0.3s;
     text-align: center;
+}
+
+.cancel-btn {
+    margin-top: 12px;
+    background-color: #dc3545;
+    color: white;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: background-color 0.3s;
+}
+
+.cancel-btn:hover {
+    background-color: #c82333;
+}
+
+.cancel-btn:disabled {
+    background-color: #6c757d;
+    cursor: not-allowed;
 }
 
 #status-phase {
@@ -861,4 +912,87 @@ body.dark-mode .page-select {
     background-color: #495057;
     color: #f8f9fa;
     border-color: #6c757d;
+}
+
+/* --- Filter Controls Styles --- */
+.filter-controls {
+    padding: 15px;
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    margin-bottom: 15px;
+}
+
+.filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    align-items: flex-end;
+}
+
+.filter-group {
+    flex: 1;
+    min-width: 150px;
+}
+
+.filter-group label {
+    display: block;
+    font-size: 0.85em;
+    font-weight: 600;
+    margin-bottom: 5px;
+    color: #495057;
+}
+
+.filter-group input[type="text"] {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+.filter-group select {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    background-color: #fff;
+}
+
+.secondary-btn {
+    background-color: #6c757d;
+    color: white;
+    padding: 8px 16px;
+    margin-top: 0;
+}
+
+.secondary-btn:hover {
+    background-color: #5a6268;
+}
+
+.filter-info {
+    margin-top: 10px;
+    font-size: 0.9em;
+    color: #6c757d;
+}
+
+/* Dark mode filter controls */
+body.dark-mode .filter-controls {
+    background-color: #495057;
+    border-color: #6c757d;
+}
+
+body.dark-mode .filter-group label {
+    color: #f8f9fa;
+}
+
+body.dark-mode .filter-group input[type="text"],
+body.dark-mode .filter-group select {
+    background-color: #343a40;
+    border-color: #6c757d;
+    color: #e9ecef;
+}
+
+body.dark-mode .filter-info {
+    color: #adb5bd;
 }

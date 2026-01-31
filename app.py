@@ -50,6 +50,16 @@ def run_scan():
     ignore_exts_str = request.form.get("ignore_exts", "")
     ignore_exts = [e.strip() for e in ignore_exts_str.split(",") if e.strip()]
 
+    # Parse minimum file size
+    min_file_size = 0
+    try:
+        min_size_val = int(request.form.get("min_file_size", 0))
+        min_size_unit = request.form.get("min_file_size_unit", "MB")
+        unit_multipliers = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+        min_file_size = min_size_val * unit_multipliers.get(min_size_unit, 1024**2)
+    except (ValueError, TypeError):
+        min_file_size = 0
+
     # Determine link type (None if dry_run or no link type selected)
     link_type = None;
     if use_hardlinks: link_type = 'hard'
@@ -66,19 +76,41 @@ def run_scan():
     progress_info[scan_id] = {"status":"queued","phase":"queued","total_items":0,"processed_items":0, "percentage": 0}
     scan_results[scan_id] = None # Placeholder for results
 
-    logging.info(f"Queuing scan {scan_id} for path: {path1}. Ignoring dirs: {ignore_dirs}, exts: {ignore_exts}")
+    logging.info(f"Queuing scan {scan_id} for path: {path1}. Ignoring dirs: {ignore_dirs}, exts: {ignore_exts}, min_size: {min_file_size}")
 
     # --- Create and Start Background Process ---
     process = multiprocessing.Process(
         target=run_manual_scan_and_link, # Function to run in the new process
-        # Pass the new ignore lists to the target function
-        args=(scan_id, path1, dry_run, link_type, save_auto, progress_info, scan_results, ignore_dirs, ignore_exts),
+        # Pass the new ignore lists and min file size to the target function
+        args=(scan_id, path1, dry_run, link_type, save_auto, progress_info, scan_results, ignore_dirs, ignore_exts, min_file_size),
         name=f"Scan-{scan_id[:6]}"
     )
     process.start() # Start the background process
 
     # Return the scan ID to the frontend so it can poll for progress
     return jsonify({"status": "scan process started", "scan_id": scan_id})
+
+@app.route("/cancel_scan/<scan_id>", methods=["POST"])
+def cancel_scan(scan_id):
+    """
+    API endpoint to request cancellation of a running scan.
+    Sets a cancellation flag that the scan process checks periodically.
+    """
+    progress = progress_info.get(scan_id)
+    if not progress:
+        return jsonify({"error": "Scan ID not found"}), 404
+    
+    current_status = dict(progress).get("status", "unknown")
+    
+    # Only allow cancellation if scan is still running
+    if current_status in ["done", "error", "cancelled"]:
+        return jsonify({"error": f"Scan already {current_status}, cannot cancel"}), 400
+    
+    # Set cancellation flag
+    logging.info(f"Cancellation requested for scan {scan_id}")
+    progress_info[scan_id] = {**dict(progress), "cancel_requested": True}
+    
+    return jsonify({"status": "cancellation requested", "scan_id": scan_id})
 
 @app.route("/get_progress/<scan_id>")
 def get_progress(scan_id):

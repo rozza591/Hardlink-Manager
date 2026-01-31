@@ -25,11 +25,17 @@ const linkActionsDiv = document.getElementById("link-actions");
 const hardlinkBtn = document.getElementById("perform-hardlink-btn");
 const softlinkBtn = document.getElementById("perform-softlink-btn");
 const downloadJsonBtn = document.getElementById("download-json-btn");
+const cancelScanBtn = document.getElementById("cancel-scan-btn");
 const paginationControls = document.getElementById("pagination-controls");
 const prevPageBtn = document.getElementById("prev-page-btn");
 const nextPageBtn = document.getElementById("next-page-btn");
 const pageInfoSpan = document.getElementById("page-info");
 const pageSizeSelect = document.getElementById("page-size-select");
+const filterControls = document.getElementById("filter-controls");
+const filterPathInput = document.getElementById("filter-path");
+const filterMinSizeSelect = document.getElementById("filter-min-size");
+const clearFilterBtn = document.getElementById("clear-filter-btn");
+const filterInfo = document.getElementById("filter-info");
 
 // --- State Variables ---
 let currentScanId = null;
@@ -43,6 +49,7 @@ const PHASE_ORDER = ['Finding Files', 'Pre-Hashing', 'Full Hashing', 'Analyzing 
 let currentPage = 1;
 let itemsPerPage = 25;
 let allDuplicates = [];
+let filteredDuplicates = []; // Filtered subset of allDuplicates
 
 // --- Event Listeners ---
 if (submitButton) {
@@ -58,6 +65,7 @@ if (darkToggle) darkToggle.addEventListener('click', () => toggleDarkMode(true))
 if (hardlinkBtn) hardlinkBtn.addEventListener("click", () => performLink('hard'));
 if (softlinkBtn) softlinkBtn.addEventListener("click", () => performLink('soft'));
 if (downloadJsonBtn) downloadJsonBtn.addEventListener("click", downloadJson);
+if (cancelScanBtn) cancelScanBtn.addEventListener("click", cancelScan);
 // Pagination Event Listeners
 if (prevPageBtn) prevPageBtn.addEventListener("click", () => changePage(-1));
 if (nextPageBtn) nextPageBtn.addEventListener("click", () => changePage(1));
@@ -67,6 +75,15 @@ if (pageSizeSelect) pageSizeSelect.addEventListener("change", (e) => {
     renderDuplicatesPage();
     updatePaginationControls();
 });
+
+// Filter Event Listeners
+let filterDebounceTimer = null;
+if (filterPathInput) filterPathInput.addEventListener("input", () => {
+    clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = setTimeout(applyFilters, 300); // Debounce 300ms
+});
+if (filterMinSizeSelect) filterMinSizeSelect.addEventListener("change", applyFilters);
+if (clearFilterBtn) clearFilterBtn.addEventListener("click", clearFilters);
 
 // --- Initialization ---
 if (localStorage.getItem('darkMode') === 'enabled') {
@@ -136,6 +153,8 @@ function startScan() {
                 newUrl.searchParams.set('scan', data.scan_id);
                 window.history.pushState({ scanId: data.scan_id }, '', newUrl);
                 updateStatusUI("Scan Queued", "Waiting...", 0);
+                // Show cancel button
+                if (cancelScanBtn) cancelScanBtn.style.display = 'inline-block';
                 pollForProgress(currentScanId, pollScanProgress);
             } else {
                 throw new Error("Unexpected response starting scan: " + (data.error || JSON.stringify(data)));
@@ -155,6 +174,31 @@ function resetScanFormState() {
     clearCacheBtn.disabled = false;
     currentScanId = null;
     if (scanPollInterval) { clearInterval(scanPollInterval); scanPollInterval = null; }
+    // Hide cancel button
+    if (cancelScanBtn) { cancelScanBtn.style.display = 'none'; cancelScanBtn.disabled = false; }
+}
+
+function cancelScan() {
+    if (!currentScanId) {
+        showError("No active scan to cancel.");
+        return;
+    }
+    if (!confirm("Are you sure you want to cancel the current scan?")) return;
+
+    cancelScanBtn.disabled = true;
+    cancelScanBtn.textContent = 'Cancelling...';
+
+    fetch(`/cancel_scan/${currentScanId}`, { method: "POST" })
+        .then(handleFetchResponse)
+        .then(data => {
+            console.log("Cancel response:", data);
+            updateStatusUI("Cancelling", "Waiting for scan to stop...", null);
+        })
+        .catch(error => {
+            handleFetchError(error, "Cancel Scan");
+            cancelScanBtn.disabled = false;
+            cancelScanBtn.textContent = 'Cancel Scan';
+        });
 }
 
 function performLink(linkType) {
@@ -218,9 +262,14 @@ function pollScanProgress(scanId, stopFn) {
     fetch(`/get_progress/${scanId}`).then(handleFetchResponse).then(data => {
         updatePhaseIndicator(data.phase);
         const nextInterval = getAdaptiveInterval(data.phase, data.percentage || 0);
-        if (data.status === "done" || data.status === "error") {
+        if (data.status === "done" || data.status === "error" || data.status === "cancelled") {
             stopFn();
-            updateStatusUI(data.phase || (data.status === "done" ? "Scan Complete" : "Scan Error"), data.status, 100);
+            let statusLabel = data.status === "done" ? "Scan Complete" :
+                data.status === "cancelled" ? "Scan Cancelled" : "Scan Error";
+            updateStatusUI(data.phase || statusLabel, data.status, 100);
+            if (data.status === "cancelled") {
+                showError("Scan was cancelled by user.");
+            }
             fetchResults(scanId);
             resetScanFormState();
         }
@@ -294,20 +343,29 @@ function displayScanResults(data, scanId) {
     // --- Pagination Logic ---
     if (Array.isArray(data.duplicates) && data.duplicates.length > 0) {
         allDuplicates = data.duplicates;
+        filteredDuplicates = [...allDuplicates]; // Start with all duplicates
         currentPage = 1;
+        // Show filter controls
+        if (filterControls) filterControls.style.display = 'block';
+        // Reset filter inputs
+        if (filterPathInput) filterPathInput.value = '';
+        if (filterMinSizeSelect) filterMinSizeSelect.value = '0';
+        if (filterInfo) filterInfo.textContent = '';
         renderDuplicatesPage();
         updatePaginationControls();
     } else if (summary.no_duplicates) {
         duplicatesDiv.innerHTML = "<p>No duplicate files found.</p>";
         paginationControls.style.display = "none";
+        if (filterControls) filterControls.style.display = 'none';
     } else {
         duplicatesDiv.innerHTML = "<p>No duplicate sets to display.</p>";
         paginationControls.style.display = "none";
+        if (filterControls) filterControls.style.display = 'none';
     }
 }
 
 function changePage(delta) {
-    const maxPage = Math.ceil(allDuplicates.length / itemsPerPage);
+    const maxPage = Math.ceil(filteredDuplicates.length / itemsPerPage);
     const newPage = currentPage + delta;
     if (newPage >= 1 && newPage <= maxPage) {
         currentPage = newPage;
@@ -319,21 +377,22 @@ function changePage(delta) {
 
 function renderDuplicatesPage() {
     const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = Math.min(startIndex + itemsPerPage, allDuplicates.length);
-    const pageItems = allDuplicates.slice(startIndex, endIndex);
+    const endIndex = Math.min(startIndex + itemsPerPage, filteredDuplicates.length);
+    const pageItems = filteredDuplicates.slice(startIndex, endIndex);
 
-    let html = `<h3>Duplicate File Sets Found: (Showing ${startIndex + 1}-${endIndex} of ${allDuplicates.length})</h3>`;
+    let html = `<h3>Duplicate File Sets Found: (Showing ${startIndex + 1}-${endIndex} of ${filteredDuplicates.length})</h3>`;
     pageItems.forEach((set_with_size, index) => {
-        // Adjust index to match global list
-        const globalIndex = startIndex + index;
+        // Find original index in allDuplicates for consistent numbering
+        const originalIndex = allDuplicates.indexOf(set_with_size);
+        const displayIndex = originalIndex >= 0 ? originalIndex : startIndex + index;
 
         if (!Array.isArray(set_with_size) || set_with_size.length < 2) return;
         const sizeInfo = set_with_size[0];
         const fileInfos = set_with_size.slice(1);
         const isSetAlreadyLinked = fileInfos[0]?.already_linked === true;
 
-        html += `<div class="duplicate-set ${isSetAlreadyLinked ? 'already-linked' : ''}" data-set-index="${globalIndex}">`;
-        html += `<h4 onclick="toggleDuplicateSet(${globalIndex})"><span>Set #${globalIndex + 1} (${fileInfos.length} files)${isSetAlreadyLinked ? ' - Already Linked' : ''}</span></h4>`;
+        html += `<div class="duplicate-set ${isSetAlreadyLinked ? 'already-linked' : ''}" data-set-index="${displayIndex}">`;
+        html += `<h4 onclick="toggleDuplicateSet(${displayIndex})"><span>Set #${displayIndex + 1} (${fileInfos.length} files)${isSetAlreadyLinked ? ' - Already Linked' : ''}</span></h4>`;
         if (sizeInfo) { html += `<p class="size-info">${escapeHtml(sizeInfo)}</p>`; }
         html += "<ul>";
         fileInfos.forEach((fileInfo, fileIndex) => {
@@ -354,15 +413,76 @@ function renderDuplicatesPage() {
 }
 
 function updatePaginationControls() {
-    const maxPage = Math.max(1, Math.ceil(allDuplicates.length / itemsPerPage));
-    if (allDuplicates.length === 0) {
+    const maxPage = Math.max(1, Math.ceil(filteredDuplicates.length / itemsPerPage));
+    if (filteredDuplicates.length === 0) {
         paginationControls.style.display = "none";
         return;
     }
     paginationControls.style.display = "flex";
-    pageInfoSpan.textContent = `Page ${currentPage} of ${maxPage} (${allDuplicates.length} sets)`;
+    pageInfoSpan.textContent = `Page ${currentPage} of ${maxPage} (${filteredDuplicates.length} sets)`;
     prevPageBtn.disabled = currentPage === 1;
     nextPageBtn.disabled = currentPage === maxPage;
+}
+
+// --- Filter Functions ---
+function applyFilters() {
+    const pathFilter = (filterPathInput?.value || '').toLowerCase().trim();
+    const minSizeFilter = parseInt(filterMinSizeSelect?.value || '0', 10);
+
+    filteredDuplicates = allDuplicates.filter(set_with_size => {
+        if (!Array.isArray(set_with_size) || set_with_size.length < 2) return false;
+
+        // Extract size from the size info string (e.g., "Size: 1.5 MB")
+        const sizeInfo = set_with_size[0];
+        const fileInfos = set_with_size.slice(1);
+
+        // Check path filter - any file in set must match
+        if (pathFilter) {
+            const hasMatchingPath = fileInfos.some(fi =>
+                fi.path && fi.path.toLowerCase().includes(pathFilter)
+            );
+            if (!hasMatchingPath) return false;
+        }
+
+        // Check size filter
+        if (minSizeFilter > 0) {
+            // Parse size from "Size: X.XX MB" format
+            const sizeMatch = sizeInfo.match(/Size:\s*([\d.]+)\s*(Bytes|KB|MB|GB|TB)/i);
+            if (sizeMatch) {
+                const sizeVal = parseFloat(sizeMatch[1]);
+                const sizeUnit = sizeMatch[2].toUpperCase();
+                const multipliers = { 'BYTES': 1, 'KB': 1024, 'MB': 1024 ** 2, 'GB': 1024 ** 3, 'TB': 1024 ** 4 };
+                const sizeBytes = sizeVal * (multipliers[sizeUnit] || 1);
+                if (sizeBytes < minSizeFilter) return false;
+            }
+        }
+
+        return true;
+    });
+
+    currentPage = 1;
+    renderDuplicatesPage();
+    updatePaginationControls();
+    updateFilterInfo();
+}
+
+function clearFilters() {
+    if (filterPathInput) filterPathInput.value = '';
+    if (filterMinSizeSelect) filterMinSizeSelect.value = '0';
+    filteredDuplicates = [...allDuplicates];
+    currentPage = 1;
+    renderDuplicatesPage();
+    updatePaginationControls();
+    if (filterInfo) filterInfo.textContent = '';
+}
+
+function updateFilterInfo() {
+    if (!filterInfo) return;
+    if (filteredDuplicates.length === allDuplicates.length) {
+        filterInfo.textContent = '';
+    } else {
+        filterInfo.textContent = `Showing ${filteredDuplicates.length} of ${allDuplicates.length} sets (filtered)`;
+    }
 }
 
 /**

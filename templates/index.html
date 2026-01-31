@@ -67,6 +67,23 @@
                 </div>
             </div>
 
+            <div class="form-grid" style="margin-top: 15px;">
+                <!-- Row 3: Size Filter -->
+                <div class="input-card">
+                    <label for="min_file_size">Minimum File Size:</label>
+                    <div class="size-input-group">
+                        <input type="number" id="min_file_size" name="min_file_size" min="0" value="0" placeholder="0">
+                        <select id="min_file_size_unit" name="min_file_size_unit">
+                            <option value="B">Bytes</option>
+                            <option value="KB">KB</option>
+                            <option value="MB" selected>MB</option>
+                            <option value="GB">GB</option>
+                        </select>
+                    </div>
+                    <small>Files smaller than this will be skipped.</small>
+                </div>
+            </div>
+
             <div class="button-group">
                 <button type="submit" id="submit-btn">Start Scan</button>
                 <button type="button" id="clear-cache-btn">Clear Results</button>
@@ -91,6 +108,7 @@
                 <span id="status-count"></span>
                 <span id="status-eta"></span>
             </div>
+            <button type="button" id="cancel-scan-btn" class="cancel-btn" style="display:none;">Cancel Scan</button>
         </div>
 
         <div id="error-message"></div>
@@ -112,6 +130,28 @@
                 <p>Perform linking based on this dry run?</p>
                 <button id="perform-hardlink-btn" data-link-type="hard">Perform Hard Link</button>
                 <button id="perform-softlink-btn" data-link-type="soft" class="softlink">Perform Soft Link</button>
+            </div>
+            <div id="filter-controls" class="filter-controls" style="display:none;">
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label for="filter-path">Filter by path:</label>
+                        <input type="text" id="filter-path" placeholder="Type to search paths..." />
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-min-size">Min set size:</label>
+                        <select id="filter-min-size">
+                            <option value="0">All sizes</option>
+                            <option value="1048576">≥ 1 MB</option>
+                            <option value="10485760">≥ 10 MB</option>
+                            <option value="104857600">≥ 100 MB</option>
+                            <option value="1073741824">≥ 1 GB</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <button type="button" id="clear-filter-btn" class="secondary-btn">Clear Filters</button>
+                    </div>
+                </div>
+                <div id="filter-info" class="filter-info"></div>
             </div>
             <div id="duplicates">
             </div>

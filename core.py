@@ -5,7 +5,7 @@ import xxhash
 import json
 import multiprocessing
 import stat
-# import psutil
+import psutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
@@ -90,22 +90,23 @@ def update_progress(progress_dict, key, updates):
 
 def get_memory_usage_percent():
     """Returns the current system memory usage percentage."""
-    return 0 # Disabled for debugging Unraid crash
-    # try:
-    #     return psutil.virtual_memory().percent
-    # except:
-    #     return 0
+    try:
+        return psutil.virtual_memory().percent
+    except Exception:
+        return 0
 
-def check_memory_and_warn(scan_id, progress_dict=None):
-    """Checks RAM usage and logs warnings if it exceeds 80%."""
-    return 0 # Disabled for debugging
-    # mem_percent = get_memory_usage_percent()
-    # if mem_percent > 80:
-    #     msg = f"WARNING: High memory usage ({mem_percent}%). Efficiency may decrease."
-    #     logging.warning(f"[Scan {scan_id}] {msg}")
-    #     if progress_dict:
-    #         update_progress(progress_dict, scan_id, {"status": f"Low Memory: {mem_percent}%"})
-    # return mem_percent
+def check_memory_and_warn(scan_id, progress_dict=None, threshold=80):
+    """Checks RAM usage and logs warnings if it exceeds threshold."""
+    try:
+        mem_percent = get_memory_usage_percent()
+        if mem_percent > threshold:
+            msg = f"WARNING: High memory usage ({mem_percent}%). Efficiency may decrease."
+            logging.warning(f"[Scan {scan_id}] {msg}")
+            if progress_dict:
+                update_progress(progress_dict, scan_id, {"memory_warning": f"High memory: {mem_percent}%"})
+        return mem_percent
+    except Exception:
+        return 0
 
 def is_ignored(filepath, ignore_dirs, ignore_exts):
     """
@@ -120,6 +121,19 @@ def is_ignored(filepath, ignore_dirs, ignore_exts):
     if any(d in parts for d in ignore_dirs):
         return True
         
+    return False
+
+def is_scan_cancelled(scan_id, progress_dict):
+    """
+    Checks if a cancellation has been requested for the given scan.
+    Returns True if cancellation was requested, False otherwise.
+    """
+    try:
+        if progress_dict:
+            progress = progress_dict.get(scan_id, {})
+            return progress.get("cancel_requested", False)
+    except Exception:
+        pass
     return False
 
 def save_results_to_file(scan_id, results_data, output_dir):
@@ -242,12 +256,12 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
     summary = { "action_taken": action_taken, "files_linked": files_linked, "files_failed": files_failed, "op_name": link_op_name }
     return summary
 
-def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None):
+def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None, min_file_size=0):
     """
     The main function executed in a separate process to perform the scan and optional linking.
     """
     start_time = time.time() # Capture start time for duration calculation
-    logging.info(f"[Scan {scan_id}] Started manual scan for: {path1}. Dry Run: {dry_run}, Link Type: {link_type}")
+    logging.info(f"[Scan {scan_id}] Started manual scan for: {path1}. Dry Run: {dry_run}, Link Type: {link_type}, Min Size: {min_file_size}")
     
     try:
         # Initial progress update
@@ -288,14 +302,20 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                                if stat.S_ISLNK(stat_info.st_mode): continue
                                filesize = stat_info.st_size; fileinode = stat_info.st_ino
                                total_bytes_scanned += filesize
-                               # Group files by size; only non-empty files are candidates for duplicates
-                               if filesize > 0: files_by_size[filesize].append({'path': filepath, 'inode': fileinode}) # Store path and inode initially
+                               # Group files by size; only files meeting minimum size are candidates for duplicates
+                               if filesize >= min_file_size and filesize > 0:
+                                   files_by_size[filesize].append({'path': filepath, 'inode': fileinode}) # Store path and inode initially
                                total_files_found += 1
                                
                                # Memory check every 1000 files
                                if total_files_found % 1000 == 0:
                                    if check_memory_and_warn(scan_id, progress_info_managed) > 95:
                                        raise MemoryError("Memory usage exceeded 95%. Aborting scan to prevent system crash.")
+                                       
+                               # Check for cancellation every 100 files
+                               if total_files_found % 100 == 0:
+                                   if is_scan_cancelled(scan_id, progress_info_managed):
+                                       raise InterruptedError("Scan cancelled by user request.")
                                        
                            except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
             elif entry.is_file(follow_symlinks=False):
@@ -307,7 +327,8 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                      if stat.S_ISLNK(stat_info.st_mode): continue # Skip symlinks
                      filesize = stat_info.st_size; fileinode = stat_info.st_ino
                      total_bytes_scanned += filesize
-                     if filesize > 0: files_by_size[filesize].append({'path': filepath, 'inode': fileinode}) # Store path and inode initially
+                     if filesize >= min_file_size and filesize > 0:
+                         files_by_size[filesize].append({'path': filepath, 'inode': fileinode}) # Store path and inode initially
                      total_files_found += 1
                  except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
 
@@ -561,6 +582,8 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
     # --- Error Handling for the entire scan process ---
     except FileNotFoundError: error_message = f"Path not found: {path1}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
     except PermissionError: error_message = f"Permission denied accessing path or subdirectories: {path1}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
+    except InterruptedError: error_message = "Scan cancelled by user."; logging.info(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "cancelled", "phase": "Cancelled"}); result_data={"error": error_message, "summary": {"action_taken": "Scan cancelled by user."}, "duplicates": []}; scan_results_managed[scan_id] = result_data
+    except MemoryError as e: error_message = f"Memory limit exceeded: {e}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
     except Exception as e: error_message = f"Unexpected scan error: {e}"; logging.exception(f"[Scan {scan_id}] Error: "); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
 
 
