@@ -26,6 +26,7 @@ const hardlinkBtn = document.getElementById("perform-hardlink-btn");
 const softlinkBtn = document.getElementById("perform-softlink-btn");
 const downloadJsonBtn = document.getElementById("download-json-btn");
 const cancelScanBtn = document.getElementById("cancel-scan-btn");
+const pauseScanBtn = document.getElementById("pause-scan-btn");
 const paginationControls = document.getElementById("pagination-controls");
 const prevPageBtn = document.getElementById("prev-page-btn");
 const nextPageBtn = document.getElementById("next-page-btn");
@@ -36,6 +37,9 @@ const filterPathInput = document.getElementById("filter-path");
 const filterMinSizeSelect = document.getElementById("filter-min-size");
 const clearFilterBtn = document.getElementById("clear-filter-btn");
 const filterInfo = document.getElementById("filter-info");
+const spaceViz = document.getElementById("space-viz");
+const vizBarUsed = document.getElementById("viz-bar-used");
+const vizBarSaved = document.getElementById("viz-bar-saved");
 
 // --- State Variables ---
 let currentScanId = null;
@@ -50,6 +54,7 @@ let currentPage = 1;
 let itemsPerPage = 25;
 let allDuplicates = [];
 let filteredDuplicates = []; // Filtered subset of allDuplicates
+let selectedSetIndices = new Set(); // Stores indices of selected duplicate sets
 
 // --- Event Listeners ---
 if (submitButton) {
@@ -66,6 +71,7 @@ if (hardlinkBtn) hardlinkBtn.addEventListener("click", () => performLink('hard')
 if (softlinkBtn) softlinkBtn.addEventListener("click", () => performLink('soft'));
 if (downloadJsonBtn) downloadJsonBtn.addEventListener("click", downloadJson);
 if (cancelScanBtn) cancelScanBtn.addEventListener("click", cancelScan);
+if (pauseScanBtn) pauseScanBtn.addEventListener("click", togglePause);
 // Pagination Event Listeners
 if (prevPageBtn) prevPageBtn.addEventListener("click", () => changePage(-1));
 if (nextPageBtn) nextPageBtn.addEventListener("click", () => changePage(1));
@@ -129,10 +135,12 @@ function startScan() {
     linkActionsDiv.style.display = "none";
     errorMessageDiv.style.display = "none";
     duplicatesDiv.innerHTML = "";
+    duplicatesDiv.innerHTML = "";
     clearResultStats();
     resetPhaseIndicator();
     if (scanPollInterval) { clearTimeout(scanPollInterval); scanPollInterval = null; }
     if (linkPollInterval) { clearTimeout(linkPollInterval); linkPollInterval = null; }
+    selectedSetIndices.clear(); // Clear selection
     const formData = new FormData(form);
     submitButton.disabled = true; submitButton.textContent = 'Scanning...';
     pathInput.disabled = true;
@@ -153,8 +161,9 @@ function startScan() {
                 newUrl.searchParams.set('scan', data.scan_id);
                 window.history.pushState({ scanId: data.scan_id }, '', newUrl);
                 updateStatusUI("Scan Queued", "Waiting...", 0);
-                // Show cancel button
+                // Show cancel and pause buttons
                 if (cancelScanBtn) cancelScanBtn.style.display = 'inline-block';
+                if (pauseScanBtn) { pauseScanBtn.style.display = 'inline-block'; pauseScanBtn.textContent = 'Pause'; }
                 pollForProgress(currentScanId, pollScanProgress);
             } else {
                 throw new Error("Unexpected response starting scan: " + (data.error || JSON.stringify(data)));
@@ -174,8 +183,29 @@ function resetScanFormState() {
     clearCacheBtn.disabled = false;
     currentScanId = null;
     if (scanPollInterval) { clearInterval(scanPollInterval); scanPollInterval = null; }
-    // Hide cancel button
+    // Hide cancel and pause buttons
     if (cancelScanBtn) { cancelScanBtn.style.display = 'none'; cancelScanBtn.disabled = false; }
+    if (pauseScanBtn) { pauseScanBtn.style.display = 'none'; pauseScanBtn.disabled = false; }
+}
+
+function togglePause() {
+    if (!currentScanId) return;
+    const isPaused = pauseScanBtn.textContent === 'Resume';
+    const action = isPaused ? 'resume_scan' : 'pause_scan';
+    const newText = isPaused ? 'Pause' : 'Resume';
+
+    pauseScanBtn.disabled = true;
+
+    fetch(`/${action}/${currentScanId}`, { method: "POST" })
+        .then(handleFetchResponse)
+        .then(data => {
+            pauseScanBtn.textContent = newText;
+            pauseScanBtn.disabled = false;
+        })
+        .catch(error => {
+            handleFetchError(error, "Pause/Resume");
+            pauseScanBtn.disabled = false;
+        });
 }
 
 function cancelScan() {
@@ -203,11 +233,22 @@ function cancelScan() {
 
 function performLink(linkType) {
     if (!lastCompletedScanId) { showError("Cannot perform link: No completed dry run scan ID available."); return; }
-    if (!confirm(`Confirm ${linkType} linking based on the last dry run (ID: ${lastCompletedScanId})? This modifies files.`)) return;
+
+    const selectionCount = selectedSetIndices.size;
+    const confirmMsg = selectionCount > 0
+        ? `Confirm ${linkType} linking for ${selectionCount} selected SETS? This modifies files.`
+        : `Confirm ${linkType} linking for ALL duplicate sets based on the last dry run? This modifies files.`;
+
+    if (!confirm(confirmMsg)) return;
     hardlinkBtn.disabled = true; softlinkBtn.disabled = true;
     linkActionsDiv.style.display = "none";
     resetStatusUI(`Starting ${linkType} linking...`);
-    const formData = new FormData(); formData.append('link_type', linkType);
+    const formData = new FormData();
+    formData.append('link_type', linkType);
+
+    if (selectedSetIndices.size > 0) {
+        formData.append('selected_indices', JSON.stringify(Array.from(selectedSetIndices)));
+    }
 
     fetch(`/perform_link/${lastCompletedScanId}`, { method: "POST", body: formData })
         .then(handleFetchResponse)
@@ -218,6 +259,14 @@ function performLink(linkType) {
                 pollForProgress(currentLinkOpId, pollLinkProgress);
             } else { throw new Error("Unexpected response starting linking: " + (data.error || JSON.stringify(data))); }
         }).catch(error => { handleFetchError(error, `Start ${linkType} Link`); resetStatusUI(`Failed to start ${linkType} linking.`, true); });
+}
+
+function toggleSetSelection(index) {
+    if (selectedSetIndices.has(index)) {
+        selectedSetIndices.delete(index);
+    } else {
+        selectedSetIndices.add(index);
+    }
 }
 
 // --- Polling Functions ---
@@ -275,7 +324,15 @@ function pollScanProgress(scanId, stopFn) {
         }
         else if (data.status === "unknown") { stopFn(); showError("Scan ID lost."); resetStatusUI("Scan lost.", true); resetScanFormState(); }
         else {
-            updateStatusUI(data.phase || "Processing", data.status || "Working...", data.percentage || 0, data.eta_seconds, data.processed_items, data.total_items);
+            // Check if paused via status text or add explicit flag in backend response if needed
+            // For now, if we locally know it's paused, we can update UI, but backend status is authoritative
+            if (pauseScanBtn && data.paused) {
+                pauseScanBtn.textContent = 'Resume';
+                updateStatusUI("Paused", "Scan paused by user.", data.percentage || 0, null, data.processed_items, data.total_items);
+            } else {
+                if (pauseScanBtn && pauseScanBtn.textContent === 'Resume') pauseScanBtn.textContent = 'Pause';
+                updateStatusUI(data.phase || "Processing", data.status || "Working...", data.percentage || 0, data.eta_seconds, data.processed_items, data.total_items);
+            }
             // Schedule next poll with adaptive interval
             setTimeout(() => pollForProgress(scanId, pollScanProgress, nextInterval), nextInterval);
         }
@@ -331,6 +388,21 @@ function displayScanResults(data, scanId) {
     resultSavings.textContent = formatBytes(summary.potential_savings) + (hasUnlinkedDuplicates && isDryRun ? ' (Potential)' : (hasUnlinkedDuplicates ? ' (Actual)' : ' (None)'));
     resultAfterSize.textContent = formatBytes(summary.after_size) + (isDryRun ? " (Theoretical)" : "");
     resultDuration.textContent = summary.duration ? `${summary.duration.toFixed(2)} s` : 'N/A';
+
+    // Update Space Visualization
+    if (spaceViz && summary.before_size > 0) {
+        spaceViz.style.display = 'block';
+        const total = summary.before_size;
+        const saved = summary.potential_savings;
+        const used = summary.after_size;
+        const savedPct = (saved / total) * 100;
+        const usedPct = (used / total) * 100;
+
+        if (vizBarUsed) vizBarUsed.style.width = `${usedPct}%`;
+        if (vizBarSaved) vizBarSaved.style.width = `${savedPct}%`;
+    } else if (spaceViz) {
+        spaceViz.style.display = 'none';
+    }
 
     if (isDryRun && hasUnlinkedDuplicates) { linkActionsDiv.style.display = "block"; }
 
@@ -390,9 +462,13 @@ function renderDuplicatesPage() {
         const sizeInfo = set_with_size[0];
         const fileInfos = set_with_size.slice(1);
         const isSetAlreadyLinked = fileInfos[0]?.already_linked === true;
+        const isSelected = selectedSetIndices.has(displayIndex);
 
         html += `<div class="duplicate-set ${isSetAlreadyLinked ? 'already-linked' : ''}" data-set-index="${displayIndex}">`;
+        html += `<div class="set-header">`;
+        html += `<input type="checkbox" class="set-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSetSelection(${displayIndex})" onclick="event.stopPropagation()">`;
         html += `<h4 onclick="toggleDuplicateSet(${displayIndex})"><span>Set #${displayIndex + 1} (${fileInfos.length} files)${isSetAlreadyLinked ? ' - Already Linked' : ''}</span></h4>`;
+        html += `</div>`;
         if (sizeInfo) { html += `<p class="size-info">${escapeHtml(sizeInfo)}</p>`; }
         html += "<ul>";
         fileInfos.forEach((fileInfo, fileIndex) => {

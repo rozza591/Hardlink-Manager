@@ -264,9 +264,14 @@ button:disabled {
     text-align: center;
 }
 
-.cancel-btn {
+.control-buttons {
+    display: flex;
+    gap: 10px;
     margin-top: 12px;
-    background-color: #dc3545;
+}
+
+.cancel-btn,
+.pause-btn {
     color: white;
     border: none;
     padding: 8px 20px;
@@ -276,13 +281,28 @@ button:disabled {
     transition: background-color 0.3s;
 }
 
+.cancel-btn {
+    background-color: #dc3545;
+}
+
 .cancel-btn:hover {
     background-color: #c82333;
 }
 
-.cancel-btn:disabled {
+.pause-btn {
+    background-color: #ffc107;
+    color: #212529;
+}
+
+.pause-btn:hover {
+    background-color: #e0a800;
+}
+
+.cancel-btn:disabled,
+.pause-btn:disabled {
     background-color: #6c757d;
     cursor: not-allowed;
+    color: white;
 }
 
 #status-phase {
@@ -346,6 +366,36 @@ button:disabled {
     padding-bottom: 15px;
     border-bottom: 1px solid #dee2e6;
     /* Separator line */
+}
+
+.duplicate-set {
+    border: 1px solid #ced4da;
+    border-radius: 5px;
+    padding: 10px;
+    margin-bottom: 10px;
+    background-color: #fff;
+    transition: background-color 0.3s;
+}
+
+.set-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.set-checkbox {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.duplicate-set h4 {
+    margin: 0;
+    /* Remove default margin */
+    cursor: pointer;
+    flex: 1;
+    /* Allow header to take remaining space */
+    color: #007bff;
 }
 
 #summary-stats {
@@ -994,5 +1044,59 @@ body.dark-mode .filter-group select {
 }
 
 body.dark-mode .filter-info {
+    color: #adb5bd;
+}
+
+/* --- Space Visualization --- */
+.viz-bar-wrapper {
+    display: flex;
+    width: 100%;
+    height: 24px;
+    background-color: #e9ecef;
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 5px 0;
+}
+
+.viz-bar-used {
+    background-color: #007bff;
+    /* Blue for remaining/used */
+    transition: width 0.5s ease;
+}
+
+.viz-bar-saved {
+    background-color: #28a745;
+    /* Green for saved */
+    transition: width 0.5s ease;
+}
+
+.viz-legend {
+    display: flex;
+    gap: 15px;
+    font-size: 0.85em;
+    color: #6c757d;
+}
+
+.color-box {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 5px;
+    border-radius: 2px;
+}
+
+.color-box.used {
+    background-color: #007bff;
+}
+
+.color-box.saved {
+    background-color: #28a745;
+}
+
+body.dark-mode .viz-bar-wrapper {
+    background-color: #343a40;
+}
+
+body.dark-mode .viz-legend {
     color: #adb5bd;
 }

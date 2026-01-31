@@ -112,6 +112,20 @@ def cancel_scan(scan_id):
     
     return jsonify({"status": "cancellation requested", "scan_id": scan_id})
 
+@app.route("/pause_scan/<scan_id>", methods=["POST"])
+def pause_scan(scan_id):
+    progress = progress_info.get(scan_id)
+    if not progress: return jsonify({"error": "Scan ID not found"}), 404
+    progress_info[scan_id] = {**dict(progress), "paused": True}
+    return jsonify({"status": "paused", "scan_id": scan_id})
+
+@app.route("/resume_scan/<scan_id>", methods=["POST"])
+def resume_scan(scan_id):
+    progress = progress_info.get(scan_id)
+    if not progress: return jsonify({"error": "Scan ID not found"}), 404
+    progress_info[scan_id] = {**dict(progress), "paused": False}
+    return jsonify({"status": "resumed", "scan_id": scan_id})
+
 @app.route("/get_progress/<scan_id>")
 def get_progress(scan_id):
     """API endpoint for the frontend to poll for scan progress updates."""
@@ -239,6 +253,18 @@ def perform_link_route(scan_id):
     previous successful dry run scan.
     """
     link_type = request.form.get("link_type") # 'hard' or 'soft'
+    
+    # Parse optional selected indices (JSON list of integers)
+    selected_indices_json = request.form.get("selected_indices")
+    selected_indices = None
+    if selected_indices_json:
+        try:
+            selected_indices = json.loads(selected_indices_json)
+            if not isinstance(selected_indices, list):
+                selected_indices = None
+        except (ValueError, TypeError):
+            # If parsing fails, default to linking all (None)
+            selected_indices = None
 
     # Validate link type
     if not link_type or link_type not in ['hard', 'soft']:
@@ -276,7 +302,7 @@ def perform_link_route(scan_id):
     # --- Create and Start Background Link/Verify Process ---
     process = multiprocessing.Process(
         target=link_process_worker, # Function to run
-        args=(link_op_id, scan_id, link_type, link_progress, link_results, scan_results), # Arguments
+        args=(link_op_id, scan_id, link_type, link_progress, link_results, scan_results, selected_indices), # Arguments
         name=f"Link-{link_op_id[:6]}" # Process name
     )
     process.start()

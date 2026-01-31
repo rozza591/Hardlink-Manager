@@ -108,7 +108,10 @@
                 <span id="status-count"></span>
                 <span id="status-eta"></span>
             </div>
-            <button type="button" id="cancel-scan-btn" class="cancel-btn" style="display:none;">Cancel Scan</button>
+            <div class="control-buttons">
+                <button type="button" id="pause-scan-btn" class="pause-btn" style="display:none;">Pause</button>
+                <button type="button" id="cancel-scan-btn" class="cancel-btn" style="display:none;">Cancel Scan</button>
+            </div>
         </div>
 
         <div id="error-message"></div>
@@ -124,7 +127,20 @@
                 <p><strong>Initial Size:</strong> <span id="result-before-size">N/A</span></p>
                 <p><strong>Final Size (Theoretical):</strong> <span id="result-after-size">N/A</span></p>
                 <p><strong>Space Saved:</strong> <span id="result-savings">N/A</span></p>
+                <p><strong>Space Saved:</strong> <span id="result-savings">N/A</span></p>
                 <p><strong>Duration:</strong> <span id="result-duration">N/A</span></p>
+
+                <div class="space-viz-container" id="space-viz" style="display:none; margin-top: 15px;">
+                    <label>Space Usage (Estim.)</label>
+                    <div class="viz-bar-wrapper">
+                        <div class="viz-bar-used" id="viz-bar-used" style="width: 100%;"></div>
+                        <div class="viz-bar-saved" id="viz-bar-saved" style="width: 0%;"></div>
+                    </div>
+                    <div class="viz-legend">
+                        <span class="legend-item"><span class="color-box used"></span> Final Size</span>
+                        <span class="legend-item"><span class="color-box saved"></span> Savings</span>
+                    </div>
+                </div>
             </div>
             <div id="link-actions">
                 <p>Perform linking based on this dry run?</p>

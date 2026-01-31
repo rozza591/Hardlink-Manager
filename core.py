@@ -136,6 +136,25 @@ def is_scan_cancelled(scan_id, progress_dict):
         pass
     return False
 
+def wait_if_paused(scan_id, progress_dict):
+    """
+    Checks if the scan is paused. If so, sleeps in a loop until resumed or cancelled.
+    """
+    try:
+        while True:
+            if not progress_dict: break
+            progress = progress_dict.get(scan_id, {})
+            if not progress.get("paused", False):
+                break # Not paused, continue
+            
+            # Check if cancelled while paused
+            if progress.get("cancel_requested", False):
+                break # Cancelled, let the main loop handle it
+                
+            time.sleep(0.5) # Wait a bit before checking again
+    except Exception:
+        pass
+
 def save_results_to_file(scan_id, results_data, output_dir):
      """
      Saves the scan results (summary and duplicate list, excluding raw data)
@@ -222,7 +241,19 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
                  # 1. Check if original file still exists (important!)
                  if not os.path.exists(original_path):
                       raise FileNotFoundError(f"Original file missing: {original_path}")
-                 # 2. Remove the duplicate file (use lexists to handle potential broken links)
+                
+                 # 2. Check for filesystem boundary (Hardlinks only)
+                 if link_type == 'hard':
+                     try:
+                         orig_dev = os.stat(original_path).st_dev
+                         dest_dir = os.path.dirname(duplicate_path)
+                         dest_dev = os.stat(dest_dir).st_dev
+                         if orig_dev != dest_dev:
+                             raise OSError(f"Cross-device link not permitted. Original: {orig_dev}, Target Dir: {dest_dev}")
+                     except OSError as dev_err:
+                         raise OSError(f"Boundary check failed: {dev_err}")
+
+                 # 3. Remove the duplicate file (use lexists to handle potential broken links)
                  if os.path.lexists(duplicate_path):
                       os.remove(duplicate_path)
                  else:
@@ -312,8 +343,9 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                                    if check_memory_and_warn(scan_id, progress_info_managed) > 95:
                                        raise MemoryError("Memory usage exceeded 95%. Aborting scan to prevent system crash.")
                                        
-                               # Check for cancellation every 100 files
+                               # Check for pause/cancellation every 100 files
                                if total_files_found % 100 == 0:
+                                   wait_if_paused(scan_id, progress_info_managed)
                                    if is_scan_cancelled(scan_id, progress_info_managed):
                                        raise InterruptedError("Scan cancelled by user request.")
                                        
@@ -435,7 +467,14 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
         update_progress(progress_info_managed, scan_id, {"phase": "Analyzing Hashes", "status": "Identifying sets..."})
         # Filter hash groups: only those with more than one file are actual duplicate sets
         # Note: duplicate_sets_raw now contains lists of dicts like {'path':.., 'inode':.., 'hash':..}
-        duplicate_sets_raw = [files for files in files_by_hash.values() if len(files) > 1];
+        duplicate_sets_raw = [files for files in files_by_hash.values() if len(files) > 1]
+        
+        # Sort files within each set by path, and then sort the sets themselves by the path of the first file.
+        # This ensures deterministic order for both the frontend (formatted_results) and backend (raw_duplicates linking).
+        for s in duplicate_sets_raw:
+            s.sort(key=lambda x: x['path'])
+        duplicate_sets_raw.sort(key=lambda s: s[0]['path'])
+
         total_duplicate_sets = len(duplicate_sets_raw)
         logging.info(f"[Scan {scan_id}] Phase 3: Found {total_duplicate_sets} duplicate sets.")
 
@@ -496,8 +535,6 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
 
         # Calculate theoretical size after linking
         after_size_theoretical = total_bytes_scanned - potential_savings
-        # Sort the entire list of duplicate sets by the path of the first file in each set
-        formatted_duplicates.sort(key=lambda set_data: set_data[1]['path'] if len(set_data) > 1 and isinstance(set_data[1], dict) else "")
 
         # --- Prepare Final Result Data ---
         # The 'duplicates' list now contains file dictionaries that include the 'hash' key
@@ -587,14 +624,14 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
     except Exception as e: error_message = f"Unexpected scan error: {e}"; logging.exception(f"[Scan {scan_id}] Error: "); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
 
 
-def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, link_results_managed, scan_results_managed):
+def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, link_results_managed, scan_results_managed, selected_indices=None):
     """
     Worker function run in a background process when linking is triggered from the UI
     after a dry run. It performs linking and then verifies the results.
     """
     files_verified = 0; verification_failed = 0; final_error = None; link_summary = {}; potential_savings = 0
     try:
-         logging.info(f"[LinkOp {link_op_id}] Worker process started for scan {scan_id}, type {link_type}.")
+         logging.info(f"[LinkOp {link_op_id}] Worker process started for scan {scan_id}, type {link_type}. Selected indices: {len(selected_indices) if selected_indices else 'All'}")
 
          # --- Retrieve Original Scan Data ---
          original_scan_result_proxy = scan_results_managed.get(scan_id)
@@ -606,11 +643,23 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
          if duplicate_sets_to_link is None:
              # This check prevents accidental re-linking or linking without valid dry run data
              raise ValueError("Original scan raw_duplicates missing for linking. Maybe linking already attempted?")
+         
+         # --- Filter sets if selective linking ---
+         if selected_indices is not None:
+             # Use only the sets at the specified indices
+             # Convert to set for O(1) lookup
+             selected_indices_set = set(selected_indices)
+             filtered_sets = []
+             for i, s in enumerate(duplicate_sets_to_link):
+                 if i in selected_indices_set:
+                     filtered_sets.append(s)
+             duplicate_sets_to_link = filtered_sets
+
          # Get summary info (like potential savings) from the original scan
          original_summary = dict(original_scan_result.get("summary", {}))
          potential_savings = original_summary.get("potential_savings", 0)
          # Ensure sets are sorted for consistent linking (original first)
-         sorted_sets_to_link = [sorted(s, key=lambda x: x['path']) for s in duplicate_sets_to_link if isinstance(s, list) and len(s) > 1]
+         sorted_sets_to_link = [sorted(s, key=lambda x: x['path']) for s in duplicate_sets_to_link if isinstance(s, list) and len(s) > 1] # Note: files within set already sorted by core, but good to be safe
 
          # --- Step 1: Perform Linking ---
          # Call the core linking logic, providing the link progress dict for updates
@@ -618,7 +667,6 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
          # Store potential error message from linking phase
          if link_summary.get("files_failed", 0) > 0:
              final_error = f"{link_summary.get('op_name','Linking')} had {link_summary['files_failed']} errors."
-
          # --- Step 2: Verification (Still uses inodes/targets) ---
          total_items_to_verify = sum(len(s)-1 for s in sorted_sets_to_link) # Number of links created
          update_progress(link_progress_managed, link_op_id, {"phase": "Verifying Links", "status": "Checking results...", "processed_items": 0, "total_items": total_items_to_verify })
