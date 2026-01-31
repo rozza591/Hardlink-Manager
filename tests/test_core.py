@@ -1,5 +1,6 @@
 import os
 import pytest
+import xxhash
 from core import format_bytes, calculate_hash, update_progress
 
 # --- Tests for Helper Functions ---
@@ -20,7 +21,8 @@ def test_calculate_hash(tmp_path):
     p = d / "hello.txt"
     p.write_text("Hello World!")
     
-    expected_hash = "a52b286a3e7f4d91" # Hash for "Hello World!"
+    # xxHash3 hash for "Hello World!"
+    expected_hash = xxhash.xxh3_64(b"Hello World!").hexdigest()
     
     filepath, hash_val = calculate_hash(str(p))
     assert filepath == str(p)
@@ -37,9 +39,9 @@ def test_calculate_hash_partial_returns_partial_hash(tmp_path):
     content = b"a" * 5000
     p.write_bytes(content)
     
-    # Calculate expected hash for first 4096 bytes
+    # Calculate expected hash for first 4096 bytes using xxHash3
     import xxhash
-    expected_hash = xxhash.xxh64(content[:4096]).hexdigest()
+    expected_hash = xxhash.xxh3_64(content[:4096]).hexdigest()
     
     # Run function
     from core import calculate_hash_partial
@@ -55,7 +57,7 @@ def test_calculate_hash_partial_small_file(tmp_path):
     p.write_bytes(content)
     
     import xxhash
-    expected_hash = xxhash.xxh64(content).hexdigest()
+    expected_hash = xxhash.xxh3_64(content).hexdigest()
     
     from core import calculate_hash_partial
     path, result_hash = calculate_hash_partial(str(p))

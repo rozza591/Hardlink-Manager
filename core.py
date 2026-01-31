@@ -32,7 +32,7 @@ def calculate_hash(filepath, block_size=65536):
     Reads the file in chunks to avoid loading large files into memory.
     Returns a tuple: (filepath, hexdigest) or (filepath, None) on error.
     """
-    hasher = xxhash.xxh64()
+    hasher = xxhash.xxh3_64()  # xxHash3 is faster on modern CPUs
     try:
         with open(filepath, 'rb') as f:
             while True:
@@ -50,7 +50,7 @@ def calculate_hash_partial(filepath, block_size=4096):
     Calculates the xxHash of the first `block_size` bytes of a file.
     Used for quick pre-filtering of potential duplicates.
     """
-    hasher = xxhash.xxh64()
+    hasher = xxhash.xxh3_64()  # xxHash3 is faster on modern CPUs
     try:
         with open(filepath, 'rb') as f:
             data = f.read(block_size)
@@ -59,6 +59,18 @@ def calculate_hash_partial(filepath, block_size=4096):
     except (IOError, OSError) as e:
         logging.warning(f"Could not partial hash file {filepath}: {e}")
         return filepath, None
+
+def calculate_eta(start_time, processed_items, total_items):
+    """Calculates estimated time remaining in seconds."""
+    if not start_time or processed_items <= 0: return None
+    elapsed = time.time() - start_time
+    # Avoid zero division or tiny intervals causing huge spikes
+    if elapsed < 1.0: return None 
+    rate = processed_items / elapsed
+    remaining_items = total_items - processed_items
+    if remaining_items < 0: remaining_items = 0
+    eta_seconds = remaining_items / rate if rate > 0 else 0
+    return int(eta_seconds)
 
 def update_progress(progress_dict, key, updates):
     """
@@ -234,11 +246,12 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
     """
     The main function executed in a separate process to perform the scan and optional linking.
     """
-    result_data = {} # Initialize dictionary to store results
+    start_time = time.time() # Capture start time for duration calculation
+    logging.info(f"[Scan {scan_id}] Started manual scan for: {path1}. Dry Run: {dry_run}, Link Type: {link_type}")
+    
     try:
-        start_time = time.time()
         # Initial progress update
-        update_progress(progress_info_managed, scan_id, {"status":"Initializing...","phase":"init","total_items":0,"processed_items":0})
+        update_progress(progress_info_managed, scan_id, {"status": "Starting scan...", "phase": "Finding Files", "percentage": 0, "processed_items": 0, "total_items": 0})
         logging.info(f"[Scan {scan_id}] Starting scan: path={path1}, dry_run={dry_run}, link_type={link_type}, save_auto={save_automatically}")
 
         # --- Phase 1: File Discovery and Size Grouping ---
@@ -321,6 +334,8 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
             logging.info(f"[Scan {scan_id}] Starting parallel partial hash with {num_workers} workers.")
             
             partial_hashed_count = 0
+            phase_start = time.time()
+            
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 hash_results = executor.map(calculate_hash_partial, filepaths_to_hash)
                 for filepath, partial_hash in hash_results:
@@ -334,7 +349,13 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                     
                     if partial_hashed_count % 100 == 0:
                          percentage = round((partial_hashed_count * 100) / potential_dupe_file_count)
-                         update_progress(progress_info_managed, scan_id, {"status": f"Quick Check {partial_hashed_count}/{potential_dupe_file_count}", "processed_items": partial_hashed_count, "percentage": percentage})
+                         eta = calculate_eta(phase_start, partial_hashed_count, potential_dupe_file_count)
+                         update_progress(progress_info_managed, scan_id, {
+                             "status": f"Quick Check {partial_hashed_count}/{potential_dupe_file_count}", 
+                             "processed_items": partial_hashed_count, 
+                             "percentage": percentage,
+                             "eta_seconds": eta
+                         })
 
             logging.info(f"[Scan {scan_id}] Phase 1.5: Partial hashing complete.")
 
@@ -354,6 +375,8 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
             info_map = {info['path']: info for info in files_to_full_hash_info}
             
             logging.info(f"[Scan {scan_id}] Starting full hash for {full_hash_count_target} files.")
+            
+            phase_start = time.time()
             
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 # Map the calculate_hash function over the list of filepaths
@@ -378,7 +401,13 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                     # Update progress periodically or on completion
                     if hashed_file_count % 10 == 0 or hashed_file_count == full_hash_count_target:
                          percentage = round((hashed_file_count * 100) / full_hash_count_target) if full_hash_count_target else 100
-                         update_progress(progress_info_managed, scan_id, {"status": f"Deep Check {hashed_file_count}/{full_hash_count_target}", "processed_items": hashed_file_count, "percentage": percentage})
+                         eta = calculate_eta(phase_start, hashed_file_count, full_hash_count_target)
+                         update_progress(progress_info_managed, scan_id, {
+                             "status": f"Deep Check {hashed_file_count}/{full_hash_count_target}", 
+                             "processed_items": hashed_file_count, 
+                             "percentage": percentage,
+                             "eta_seconds": eta
+                         })
         logging.info(f"[Scan {scan_id}] Phase 2: Hashing complete. Processed {hashed_file_count} files.")
 
         # --- Phase 3: Analyzing Hashes and Identifying Duplicate Sets ---

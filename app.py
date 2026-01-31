@@ -16,20 +16,14 @@ app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', os.urandom(24)) # Secre
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(processName)s - %(message)s')
 
-# --- Shared State using Multiprocessing Manager ---
-# This allows different processes (web server and background tasks) to share data safely.
-if 'manager' not in globals():
-    # Force 'fork' method for Linux/Docker compatibility (fixes silent failures)
-    try:
-        multiprocessing.set_start_method('fork')
-    except RuntimeError:
-        pass # Context already set
-    manager = multiprocessing.Manager()
-
-progress_info = manager.dict()  # Stores progress updates for ongoing scans {scan_id: {status, phase, ...}}
-scan_results = manager.dict()   # Stores final results of completed scans {scan_id: {summary, duplicates, ...}}
-link_progress = manager.dict()  # Stores progress updates for ongoing linking operations {link_op_id: {status, phase, ...}}
-link_results = manager.dict()   # Stores final results of completed linking operations {link_op_id: {summary, files_linked, ...}}
+# --- Shared State Placeholders ---
+# These specific variables will be initialized with multiprocessing.Manager objects 
+# inside the __main__ block to ensure safe processing on macOS/Window (spawn method).
+manager = None
+progress_info = {} 
+scan_results = {}
+link_progress = {}
+link_results = {}
 
 
 # --- Flask Routes ---
@@ -373,10 +367,29 @@ def static_files(filename):
 # --- Main Execution ---
 if __name__ == "__main__":
     # freeze_support() is necessary for multiprocessing on Windows when freezing the app (e.g., with PyInstaller)
+    # freeze_support() is necessary for multiprocessing on Windows when freezing the app (e.g., with PyInstaller)
     multiprocessing.freeze_support()
+
+    # --- Shared State Initialization ---
+    # Performed here to prevent recursive initialization in child processes (spawn/forkserver)
+    import sys
+    try:
+        if sys.platform != 'darwin':
+            # Force 'fork' for Linux as per original requirement, but skip on macOS
+            multiprocessing.set_start_method('fork')
+    except RuntimeError:
+        pass # Context already set
+    
+    manager = multiprocessing.Manager()
+    progress_info = manager.dict()
+    scan_results = manager.dict()
+    link_progress = manager.dict()
+    link_results = manager.dict()
+
     logging.info("Starting Flask app with multiprocessing background tasks for Web UI.")
     # Run the Flask development server
     # host="0.0.0.0" makes it accessible on the network
     # threaded=False is often recommended when using multiprocessing
     # debug=False should be used in production
-    app.run(debug=False, host="0.0.0.0", port=5000, threaded=False)
+    port = int(os.environ.get("PORT", 5001))
+    app.run(debug=False, host="0.0.0.0", port=port, threaded=False)

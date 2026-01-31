@@ -1,6 +1,5 @@
 Flask
 xxhash
-pdfkit
 pytest
 pytest-cov
 psutil
