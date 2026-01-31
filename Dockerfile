@@ -14,6 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Expose the default port
+EXPOSE 5000
+
 # Set the default log level to INFO. This can be overridden when running the container.
 ENV LOG_LEVEL=INFO
 
