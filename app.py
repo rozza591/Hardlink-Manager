@@ -2,11 +2,17 @@ import os
 import logging
 import uuid
 import json
+from datetime import datetime
 from flask import Flask, request, jsonify, render_template, send_from_directory, Response
 import multiprocessing
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import atexit
 
 # Import logic from the new core module
-from core import run_manual_scan_and_link, link_process_worker
+# Import logic from the new core module
+from core import run_manual_scan_and_link, link_process_worker, undo_link_operation
+from report_generator import generate_pdf_report
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -125,6 +131,22 @@ def resume_scan(scan_id):
     if not progress: return jsonify({"error": "Scan ID not found"}), 404
     progress_info[scan_id] = {**dict(progress), "paused": False}
     return jsonify({"status": "resumed", "scan_id": scan_id})
+
+@app.route("/undo_link/<op_id>", methods=["POST"])
+def undo_link(op_id):
+    """
+    Triggers an undo operation for a specific link job.
+    """
+    # Check if undo logic is available/file exists happens in worker, 
+    # but we could quickly check existence here.
+    # Launch background process
+    p = multiprocessing.Process(
+        target=undo_link_operation, 
+        args=(op_id, link_progress),
+        name=f"Undo-{op_id[:6]}"
+    )
+    p.start()
+    return jsonify({"status": "undo_started", "op_id": op_id, "monitor_key": f"undo_{op_id}"})
 
 @app.route("/get_progress/<scan_id>")
 def get_progress(scan_id):
@@ -378,9 +400,73 @@ def get_link_result(link_op_id):
 
     # Add download availability flags to the *link result* response
     final_result["download_json_available"] = download_available
-    final_result["download_pdf_available"] = False # PDF download is removed
+    final_result["download_pdf_available"] = False # PDF download is typically for scan results
 
-    return jsonify(final_result) # Return the link operation results + download flags
+    return jsonify(final_result)
+
+@app.route("/download_pdf/<scan_id>")
+def download_pdf_route(scan_id):
+    """
+    Generates and returns a PDF report for the specified scan.
+    """
+    result_proxy = scan_results.get(scan_id)
+    if not result_proxy: return jsonify({"error": "Scan ID not found"}), 404
+
+    try:
+        # Convert proxy to dict
+        result_data = dict(result_proxy)
+        if isinstance(result_data.get("summary"), multiprocessing.managers.DictProxy):
+            result_data["summary"] = dict(result_data["summary"])
+        if isinstance(result_data.get("duplicates"), multiprocessing.managers.ListProxy):
+            result_data["duplicates"] = list(result_data["duplicates"])
+
+        filename = f"scan_report_{scan_id}.pdf"
+        output_path = os.path.join(os.getcwd(), filename) # Save to CWD momentarily
+        
+        # Generate PDF
+        success = generate_pdf_report(result_data, output_path)
+        
+        if success and os.path.exists(output_path):
+            # Send file and then remove it? send_file handles open files, usually safest to keep or use tempfile.
+            # Using send_from_directory is easier if path is known.
+            return send_from_directory(os.getcwd(), filename, as_attachment=True)
+        else:
+            return jsonify({"error": "Failed to generate PDF."}), 500
+
+    except Exception as e:
+        logging.error(f"PDF Generation Error: {e}")
+        return jsonify({"error": f"Internal error: {e}"}), 500
+
+
+@app.route("/get_results/<scan_id>")
+def get_results_route(scan_id):
+    """
+    API endpoint for the frontend to retrieve the final results of a completed scan.
+    Only returns results if the scan status is 'done' or 'error'.
+    """
+    # Check if scan exists in the results dictionary
+    result_proxy = scan_results.get(scan_id)
+    if not result_proxy:
+        # If not in results, check if it's still in progress or queued
+        progress = progress_info.get(scan_id)
+        if progress:
+             # Scan exists but not finished
+             return jsonify({"status": progress.get("status", "unknown")})
+        return jsonify({"error": "Scan ID not found"}), 404
+        
+    # Convert proxy to regular dict
+    final_result = dict(result_proxy)
+
+    # Determine availability of downloadables
+    download_available = False
+    try:
+        # Check if JSON file exists
+        file_path = f"scan_results_{scan_id}.json"
+        if os.path.exists(file_path): download_available = True
+    except Exception: pass
+    
+    final_result["download_json_available"] = download_available
+    final_result["download_pdf_available"] = True # PDF download is now available
 
 
 @app.route("/clear_cache", methods=["POST"])
@@ -422,6 +508,125 @@ def static_files(filename):
     return send_from_directory(static_folder, filename)
 
 
+# --- Scheduler Setup ---
+scheduler = BackgroundScheduler()
+SCHEDULE_FILE = "schedules.json"
+
+def trigger_scheduled_scan(task_id, path, options):
+    """
+    Wrapper to start a scan from the scheduler.
+    """
+    scan_id = str(uuid.uuid4())
+    logging.info(f"Starting scheduled scan {scan_id} for {path} (Task {task_id})")
+    
+    # Initialize progress
+    progress_info[scan_id] = {"status": "queued", "phase": "init", "total_items": 0, "processed_items": 0, "percentage": 0}
+    scan_results[scan_id] = None
+    
+    # Extract options
+    dry_run = options.get("dry_run", True)
+    link_type = options.get("link_type", None) # Default None for scan only
+    save_auto = options.get("save_auto", True)
+    min_file_size = options.get("min_file_size", 0)
+    
+    # Start process
+    p = multiprocessing.Process(
+        target=run_manual_scan_and_link,
+        args=(scan_id, path, dry_run, link_type, save_auto, progress_info, scan_results, None, None, min_file_size),
+        name=f"SchedScan-{scan_id[:6]}"
+    )
+    p.start()
+
+def load_schedules():
+    if not os.path.exists(SCHEDULE_FILE): return
+    try:
+        with open(SCHEDULE_FILE, 'r') as f:
+            jobs = json.load(f)
+            for job in jobs:
+                # Add check to prevent duplicate jobs on reload if dynamic
+                if not scheduler.get_job(job['id']):
+                    scheduler.add_job(
+                        func=trigger_scheduled_scan,
+                        trigger=CronTrigger.from_crontab(job['cron']),
+                        id=job['id'],
+                        name=job['name'],
+                        args=[job['id'], job['path'], job['options']],
+                        replace_existing=True
+                    )
+        logging.info(f"Loaded {len(jobs)} scheduled jobs.")
+    except Exception as e:
+        logging.error(f"Error loading schedules: {e}")
+
+@app.route("/get_schedules")
+def get_schedules():
+    if not os.path.exists(SCHEDULE_FILE): return jsonify([])
+    try:
+        with open(SCHEDULE_FILE, 'r') as f:
+            return jsonify(json.load(f))
+    except: return jsonify([])
+
+@app.route("/add_schedule", methods=["POST"])
+def add_schedule():
+    data = request.json
+    job_id = str(uuid.uuid4())
+    name = data.get("name", "Untitled Schedule")
+    cron = data.get("cron") # "m h dom mon dow"
+    path = data.get("path")
+    options = data.get("options", {})
+    
+    if not cron or not path: return jsonify({"error": "Missing cron or path"}), 400
+    
+    new_job = {
+        "id": job_id,
+        "name": name,
+        "cron": cron,
+        "path": path,
+        "options": options,
+        "created_at": str(datetime.now())
+    }
+    
+    # Load existing, append, save
+    jobs = []
+    if os.path.exists(SCHEDULE_FILE):
+        try:
+            with open(SCHEDULE_FILE, 'r') as f: jobs = json.load(f)
+        except: pass
+    
+    jobs.append(new_job)
+    with open(SCHEDULE_FILE, 'w') as f: json.dump(jobs, f, indent=4)
+    
+    # Add to runtime scheduler
+    try:
+        scheduler.add_job(
+            func=trigger_scheduled_scan,
+            trigger=CronTrigger.from_crontab(cron),
+            id=job_id,
+            name=name,
+            args=[job_id, path, options]
+        )
+        return jsonify({"status": "created", "job": new_job})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/delete_schedule/<job_id>", methods=["DELETE"])
+def delete_schedule(job_id):
+    # Remove from file
+    jobs = []
+    if os.path.exists(SCHEDULE_FILE):
+        try:
+            with open(SCHEDULE_FILE, 'r') as f: jobs = json.load(f)
+        except: pass
+    
+    jobs = [j for j in jobs if j['id'] != job_id]
+    with open(SCHEDULE_FILE, 'w') as f: json.dump(jobs, f, indent=4)
+    
+    # Remove from runtime
+    try:
+        if scheduler.get_job(job_id): scheduler.remove_job(job_id)
+        return jsonify({"status": "deleted"})
+    except:
+        return jsonify({"status": "deleted_file_only"}) # Job might not have been in runtime
+
 # --- Main Execution ---
 if __name__ == "__main__":
     # freeze_support() is necessary for multiprocessing on Windows when freezing the app (e.g., with PyInstaller)
@@ -443,6 +648,12 @@ if __name__ == "__main__":
     scan_results = manager.dict()
     link_progress = manager.dict()
     link_results = manager.dict()
+
+    # --- Start Scheduler ---
+    if not scheduler.running:
+        scheduler.start()
+    load_schedules()
+    atexit.register(lambda: scheduler.shutdown())
 
     logging.info("Starting Flask app with multiprocessing background tasks for Web UI.")
     # Run the Flask development server

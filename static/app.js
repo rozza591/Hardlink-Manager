@@ -25,6 +25,7 @@ const linkActionsDiv = document.getElementById("link-actions");
 const hardlinkBtn = document.getElementById("perform-hardlink-btn");
 const softlinkBtn = document.getElementById("perform-softlink-btn");
 const downloadJsonBtn = document.getElementById("download-json-btn");
+const downloadPdfBtn = document.getElementById("download-pdf-btn");
 const cancelScanBtn = document.getElementById("cancel-scan-btn");
 const pauseScanBtn = document.getElementById("pause-scan-btn");
 const paginationControls = document.getElementById("pagination-controls");
@@ -70,6 +71,7 @@ if (darkToggle) darkToggle.addEventListener('click', () => toggleDarkMode(true))
 if (hardlinkBtn) hardlinkBtn.addEventListener("click", () => performLink('hard'));
 if (softlinkBtn) softlinkBtn.addEventListener("click", () => performLink('soft'));
 if (downloadJsonBtn) downloadJsonBtn.addEventListener("click", downloadJson);
+if (downloadPdfBtn) downloadPdfBtn.addEventListener("click", downloadPdf);
 if (cancelScanBtn) cancelScanBtn.addEventListener("click", cancelScan);
 if (pauseScanBtn) pauseScanBtn.addEventListener("click", togglePause);
 // Pagination Event Listeners
@@ -574,18 +576,30 @@ function displayLinkResults(data) {
     linkActionsDiv.style.display = "none";
 
     // --- Update Download Buttons State (based on original scan) ---
-    if (data.download_json_available && lastCompletedScanId) { downloadJsonBtn.style.display = 'inline-block'; }
-    else { downloadJsonBtn.style.display = 'none'; }
-    // PDF Button check removed
+    if (data.download_json_available && scanId) {
+        if (downloadJsonBtn) { downloadJsonBtn.style.display = "inline-block"; downloadJsonBtn.onclick = () => downloadJson(scanId); }
+    } else {
+        if (downloadJsonBtn) downloadJsonBtn.style.display = "none";
+    }
+
+    if (data.download_pdf_available && scanId) {
+        if (downloadPdfBtn) { downloadPdfBtn.style.display = "inline-block"; downloadPdfBtn.onclick = () => downloadPdf(scanId); }
+    } else {
+        if (downloadPdfBtn) downloadPdfBtn.style.display = "none";
+    }
 
     if (lastCompletedScanId) console.log("Download buttons updated after linking, for original scan:", lastCompletedScanId);
 }
 
 // --- Download Functions ---
-function downloadJson() {
-    if (!lastCompletedScanId) { showError("Cannot download JSON: No completed scan ID available."); return; }
-    console.log(`Triggering JSON download for scan ID: ${lastCompletedScanId}`);
-    window.location.href = `/download_results/${lastCompletedScanId}/json`;
+function downloadJson(scanIdToUse) {
+    const id = scanIdToUse || lastCompletedScanId || currentScanId;
+    if (id) window.location.href = `/download_results/${id}/json`;
+}
+
+function downloadPdf(scanIdToUse) {
+    const id = scanIdToUse || lastCompletedScanId || currentScanId;
+    if (id) window.location.href = `/download_pdf/${id}`;
 }
 
 // --- UI & Utility Functions ---

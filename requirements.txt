@@ -3,3 +3,5 @@ xxhash
 pytest
 pytest-cov
 psutil
+APScheduler
+reportlab

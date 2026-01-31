@@ -8,6 +8,14 @@ import stat
 import psutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+import shutil
+
+UNDO_DIR = "undo_logs"
+if not os.path.exists(UNDO_DIR):
+    try:
+        os.makedirs(UNDO_DIR)
+    except Exception: pass # Be tolerant if parallel procs try to create
+
 
 # --- Helper Functions ---
 
@@ -216,6 +224,7 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
     # Calculate total number of links to create (one less than files per set)
     total_links_to_attempt = sum(len(s)-1 for s in duplicate_sets_with_info if len(s)>1)
     links_attempted = 0
+    undo_log = [] # Record actions for undo
 
     progress_key = op_id # Use the operation ID as the key for progress updates
     progress_dict = link_progress_managed # The dictionary to update
@@ -259,9 +268,18 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
                  else:
                       # Log if the duplicate was already gone (might happen in rare cases)
                       logging.warning(f"[{op_id}] Duplicate path did not exist before linking: {duplicate_path}")
-                 # 3. Create the hard or soft link
+                 # 4. Create the hard or soft link
                  link_function(original_path, duplicate_path)
                  files_linked += 1 # Increment success counter
+                 
+                 # Record for undo
+                 undo_log.append({
+                     "path": duplicate_path,
+                     "original": original_path,
+                     "type": link_type,
+                     "timestamp": time.time()
+                 })
+                 
             except OSError as link_err:
                  # Catch OS-level errors during remove/link (permissions, etc.)
                  files_failed += 1; logging.error(f"[{op_id}] Failed {link_op_name.lower()} '{duplicate_path}'->'{original_path}': {link_err}")
@@ -280,11 +298,26 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
                          "percentage": percentage
                      })
 
+    # Save undo log
+    if undo_log:
+        try:
+            log_path = os.path.join(UNDO_DIR, f"undo_{op_id}.json")
+            with open(log_path, 'w') as f:
+                json.dump(undo_log, f, indent=4)
+        except Exception as e:
+            logging.error(f"[{op_id}] Failed to save undo log: {e}")
+
     # Final summary message
     action_taken = f"{link_op_name} complete. Linked: {files_linked}, Failed: {files_failed}."
     logging.info(f"[{op_id}] {action_taken}")
     # Return summary dictionary
-    summary = { "action_taken": action_taken, "files_linked": files_linked, "files_failed": files_failed, "op_name": link_op_name }
+    summary = { 
+        "action_taken": action_taken, 
+        "files_linked": files_linked, 
+        "files_failed": files_failed, 
+        "op_name": link_op_name,
+        "undo_available": len(undo_log) > 0
+    }
     return summary
 
 def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None, min_file_size=0):
@@ -781,3 +814,50 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
          update_progress(link_progress_managed, link_op_id, {"status": "error", "percentage": 100})
          # Store an error result for the link operation
          link_results_managed[link_op_id] = {"error": error_message, "summary": "Linking failed.", "files_linked": 0, "files_failed": 0, "files_verified": files_verified, "verification_failed": verification_failed}
+
+def undo_link_operation(op_id, progress_dict=None):
+    """
+    Reverses a linking operation using the saved undo log.
+    """
+    log_path = os.path.join(UNDO_DIR, f"undo_{op_id}.json")
+    if not os.path.exists(log_path):
+        return {"error": "Undo log not found."}
+    
+    try:
+        with open(log_path, 'r') as f:
+            actions = json.load(f)
+    except Exception as e:
+        return {"error": f"Failed to load undo log: {e}"}
+        
+    total = len(actions)
+    restored = 0
+    errors = 0
+    
+    # Reverse order to undo last actions first
+    for i, action in enumerate(reversed(actions)):
+        path = action['path']
+        original = action['original']
+        
+        try:
+            # Check if current path is a link (or file that shouldn't be there?)
+            # Strategy: Delete 'path' and copy 'original' to 'path'
+            
+            if os.path.lexists(path):
+                os.remove(path)
+                
+            shutil.copy2(original, path)
+            restored += 1
+            
+        except Exception as e:
+            logging.error(f"Undo failed for {path}: {e}")
+            errors += 1
+            
+        if progress_dict:
+             update_progress(progress_dict, f"undo_{op_id}", {
+                 "status": f"Undoing {restored}/{total}...",
+                 "processed_items": restored,
+                 "total_items": total,
+                 "percentage": int((restored/total)*100)
+             })
+
+    return {"status": "success", "restored": restored, "errors": errors}
