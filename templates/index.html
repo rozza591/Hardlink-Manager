@@ -87,6 +87,7 @@
             <div class="button-group">
                 <button type="submit" id="submit-btn">Start Scan</button>
                 <button type="button" id="clear-cache-btn">Clear Results</button>
+                <button type="button" id="open-scheduler-btn" class="secondary-btn">Manage Schedules</button>
             </div>
         </form>
 
@@ -103,6 +104,10 @@
             <div id="status-details">Please wait.</div>
             <div class="progress-bar-container">
                 <div class="progress-bar" id="progress-bar-inner"></div>
+            </div>
+            <!-- Micro Progress Container -->
+            <div id="micro-progress-container" style="display:none; margin-top: 5px; font-size: 0.85em; color: #666;">
+                <ul id="micro-progress-list" style="list-style: none; padding: 0; margin: 0;"></ul>
             </div>
             <div id="status-stats" class="status-stats">
                 <span id="status-count"></span>
@@ -128,7 +133,7 @@
                 <p><strong>Initial Size:</strong> <span id="result-before-size">N/A</span></p>
                 <p><strong>Final Size (Theoretical):</strong> <span id="result-after-size">N/A</span></p>
                 <p><strong>Space Saved:</strong> <span id="result-savings">N/A</span></p>
-                <p><strong>Space Saved:</strong> <span id="result-savings">N/A</span></p>
+
                 <p><strong>Duration:</strong> <span id="result-duration">N/A</span></p>
 
                 <div class="space-viz-container" id="space-viz" style="display:none; margin-top: 15px;">
@@ -145,6 +150,15 @@
             </div>
             <div id="link-actions">
                 <p>Perform linking based on this dry run?</p>
+                <div class="strategy-options" style="margin-bottom:10px;">
+                    <label>Keep Strategy:</label>
+                    <select id="link-strategy">
+                        <option value="path">Alphabetical (Default)</option>
+                        <option value="oldest">Keep Oldest File</option>
+                        <option value="newest">Keep Newest File</option>
+                        <option value="shortest_path">Keep Shortest Path</option>
+                    </select>
+                </div>
                 <button id="perform-hardlink-btn" data-link-type="hard">Perform Hard Link</button>
                 <button id="perform-softlink-btn" data-link-type="soft" class="softlink">Perform Soft Link</button>
             </div>
@@ -183,6 +197,57 @@
                     <option value="100">100 per page</option>
                 </select>
             </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- Scheduler Modal -->
+    <div id="scheduler-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h2>Scheduled Scans</h2>
+            <div id="schedule-list">
+                <p>Loading...</p>
+            </div>
+
+            <hr>
+            <h3>Add New Schedule</h3>
+            <div class="schedule-form">
+                <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" id="sched-name" placeholder="Daily Backup Scan">
+                </div>
+                <div class="form-group">
+                    <label>Path</label>
+                    <input type="text" id="sched-path" placeholder="/data">
+                </div>
+                <div class="form-group">
+                    <label>Frequency</label>
+                    <select id="sched-cron-preset">
+                        <option value="0 0 * * *">Daily (Midnight)</option>
+                        <option value="0 2 * * *">Daily (2 AM)</option>
+                        <option value="0 0 * * 0">Weekly (Sunday)</option>
+                        <option value="custom">Custom Cron...</option>
+                    </select>
+                    <input type="text" id="sched-cron-custom" placeholder="* * * * *"
+                        style="display:none; margin-top:5px;">
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" id="sched-dryrun" checked> Dry Run Only</label>
+                    <label><input type="checkbox" id="sched-hardlink"> Auto-Link (Hard)</label>
+                </div>
+                <button type="button" id="add-schedule-btn">Save Schedule</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div id="preview-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal" id="close-preview-modal">&times;</span>
+            <h3 id="preview-title">File Preview</h3>
+            <pre id="preview-content"
+                style="background:#f4f4f4; padding:10px; overflow:auto; max-height:400px; white-space: pre-wrap; color: black;"></pre>
         </div>
     </div>
 </body>

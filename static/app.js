@@ -11,6 +11,8 @@ const statusDetails = document.getElementById("status-details");
 const statusCount = document.getElementById("status-count");
 const statusEta = document.getElementById("status-eta");
 const progressBar = document.getElementById("progress-bar-inner");
+const microProgressContainer = document.getElementById("micro-progress-container");
+const microProgressList = document.getElementById("micro-progress-list");
 const resultsDiv = document.getElementById("results");
 const errorMessageDiv = document.getElementById("error-message");
 const duplicatesDiv = document.getElementById("duplicates");
@@ -41,6 +43,21 @@ const filterInfo = document.getElementById("filter-info");
 const spaceViz = document.getElementById("space-viz");
 const vizBarUsed = document.getElementById("viz-bar-used");
 const vizBarSaved = document.getElementById("viz-bar-saved");
+const schedulerModal = document.getElementById("scheduler-modal");
+const openSchedulerBtn = document.getElementById("open-scheduler-btn");
+const closeSchedulerBtn = document.querySelector(".close-modal");
+const addScheduleBtn = document.getElementById("add-schedule-btn");
+const schedName = document.getElementById("sched-name");
+const schedPath = document.getElementById("sched-path");
+const schedCron = document.getElementById("sched-cron-preset");
+const schedCronCustom = document.getElementById("sched-cron-custom");
+const schedDryrun = document.getElementById("sched-dryrun");
+const schedHardlink = document.getElementById("sched-hardlink");
+const linkStrategySelect = document.getElementById("link-strategy");
+const previewModal = document.getElementById("preview-modal");
+const closePreviewBtn = document.getElementById("close-preview-modal");
+if (closePreviewBtn) closePreviewBtn.onclick = () => previewModal.style.display = "none";
+if (previewModal) window.addEventListener('click', (event) => { if (event.target == previewModal) previewModal.style.display = "none"; });
 
 // --- State Variables ---
 let currentScanId = null;
@@ -92,6 +109,13 @@ if (filterPathInput) filterPathInput.addEventListener("input", () => {
 });
 if (filterMinSizeSelect) filterMinSizeSelect.addEventListener("change", applyFilters);
 if (clearFilterBtn) clearFilterBtn.addEventListener("click", clearFilters);
+if (openSchedulerBtn) openSchedulerBtn.addEventListener("click", () => { schedulerModal.style.display = "block"; loadSchedules(); });
+if (closeSchedulerBtn) closeSchedulerBtn.addEventListener("click", () => schedulerModal.style.display = "none");
+if (addScheduleBtn) addScheduleBtn.addEventListener("click", addSchedule);
+if (schedCron) schedCron.addEventListener("change", (e) => {
+    schedCronCustom.style.display = e.target.value === 'custom' ? 'block' : 'none';
+});
+window.onclick = function (event) { if (event.target == schedulerModal) schedulerModal.style.display = "none"; }
 
 // --- Initialization ---
 if (localStorage.getItem('darkMode') === 'enabled') {
@@ -248,6 +272,9 @@ function performLink(linkType) {
     const formData = new FormData();
     formData.append('link_type', linkType);
 
+    // Add Strategy
+    if (linkStrategySelect) formData.append('link_strategy', linkStrategySelect.value);
+
     if (selectedSetIndices.size > 0) {
         formData.append('selected_indices', JSON.stringify(Array.from(selectedSetIndices)));
     }
@@ -334,6 +361,7 @@ function pollScanProgress(scanId, stopFn) {
             } else {
                 if (pauseScanBtn && pauseScanBtn.textContent === 'Resume') pauseScanBtn.textContent = 'Pause';
                 updateStatusUI(data.phase || "Processing", data.status || "Working...", data.percentage || 0, data.eta_seconds, data.processed_items, data.total_items);
+                updateMicroProgress(data.micro_progress);
             }
             // Schedule next poll with adaptive interval
             setTimeout(() => pollForProgress(scanId, pollScanProgress, nextInterval), nextInterval);
@@ -483,7 +511,8 @@ function renderDuplicatesPage() {
             const linkedTag = fileInfo.already_linked ? '<span class="already-linked-tag">[Linked]</span>' : '';
             const originalTag = isOriginal ? ' <strong style="font-size: 0.85em;">(Keep This)</strong>' : '';
             const copyBtn = `<button class="copy-path-btn" onclick="copyToClipboard('${rawPath}', this); event.stopPropagation();" title="Copy path">&#128203;</button>`;
-            html += `<li ${isOriginal ? 'style="font-weight:bold;"' : ''}>${filePath}${copyBtn}<span class="hash-info" title="${escapeHtml(fullHash)}">[Hash: ${hashDisplay}]</span>${linkedTag}${originalTag}</li>`;
+            const previewBtn = `<button class="small-btn info-btn" style="padding:2px 5px; margin-left:5px; font-size:0.8em;" onclick="previewFile('${rawPath}')" title="Preview File">👁️</button>`;
+            html += `<li ${isOriginal ? 'style="font-weight:bold;"' : ''}>${filePath}${copyBtn}${previewBtn}<span class="hash-info" title="${escapeHtml(fullHash)}">[Hash: ${hashDisplay}]</span>${linkedTag}${originalTag}</li>`;
         });
         html += "</ul></div>";
     });
@@ -707,6 +736,110 @@ function updatePhaseIndicator(currentPhase) {
     });
 }
 
+
 function resetPhaseIndicator() {
     document.querySelectorAll('.progress-phase').forEach(p => p.classList.remove('active', 'completed'));
+    if (microProgressContainer) microProgressContainer.style.display = 'none';
+    if (microProgressList) microProgressList.innerHTML = '';
+}
+
+function updateMicroProgress(tasks) {
+    if (!microProgressContainer || !microProgressList) return;
+
+    if (!tasks || tasks.length === 0) {
+        microProgressContainer.style.display = 'none';
+        microProgressList.innerHTML = '';
+        return;
+    }
+
+    microProgressContainer.style.display = 'block';
+    // Limit to showing top 5 tasks to avoid clutter
+    const tasksToShow = tasks.slice(0, 5);
+    const hiddenCount = tasks.length - tasksToShow.length;
+
+    let html = '';
+    tasksToShow.forEach(task => {
+        const shortPath = task.file.split('/').slice(-2).join('/'); // Show last 2 segments
+        html += `<li>Hashing: .../${escapeHtml(shortPath)} <span style="font-weight:bold;">${task.percentage}%</span></li>`;
+    });
+
+    if (hiddenCount > 0) {
+        html += `<li style="font-style:italic;">...and ${hiddenCount} more files</li>`;
+    }
+
+    microProgressList.innerHTML = html;
+}
+
+// --- Scheduler Functions ---
+function loadSchedules() {
+    const listDiv = document.getElementById("schedule-list");
+    listDiv.innerHTML = "Loading...";
+    fetch("/get_schedules")
+        .then(r => r.json())
+        .then(data => {
+            if (data.length === 0) { listDiv.innerHTML = "<p>No scheduled scans.</p>"; return; }
+            let html = "<ul>";
+            data.forEach(job => {
+                html += `<li>
+                    <strong>${job.name}</strong> (${job.cron}) - ${job.path}
+                    <button class="small-btn danger-btn" onclick="deleteSchedule('${job.id}')">Delete</button>
+                    <br><small>Next run: Unknown (Dynamic)</small>
+                </li>`;
+            });
+            html += "</ul>";
+            listDiv.innerHTML = html;
+        }).catch(e => listDiv.innerHTML = "Error loading schedules.");
+}
+
+function addSchedule() {
+    const cronVal = schedCron.value === 'custom' ? schedCronCustom.value : schedCron.value;
+    const body = {
+        name: schedName.value,
+        path: schedPath.value,
+        cron: cronVal,
+        options: {
+            dry_run: schedDryrun.checked,
+            link_type: schedHardlink.checked ? 'hard' : null,
+            save_auto: true
+        }
+    };
+    fetch("/add_schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    }).then(r => r.json()).then(data => {
+        if (data.error) alert("Error: " + data.error);
+        else {
+            alert("Schedule Added!");
+            loadSchedules();
+            schedName.value = "";
+        }
+    });
+}
+
+function deleteSchedule(id) {
+    if (!confirm("Delete this schedule?")) return;
+    fetch("/delete_schedule/" + id, { method: "DELETE" })
+        .then(r => r.json())
+        .then(() => loadSchedules());
+}
+
+function previewFile(path) {
+    const previewContent = document.getElementById("preview-content");
+    const previewTitle = document.getElementById("preview-title");
+    previewContent.textContent = "Loading...";
+    previewTitle.textContent = "Previewing: " + path.split('/').pop();
+    if (previewModal) previewModal.style.display = "block";
+
+    fetch(`/preview_file?path=${encodeURIComponent(path)}`)
+        .then(r => {
+            if (!r.ok) return r.text().then(t => { throw new Error(t) });
+            return r.text();
+        })
+        .then(text => {
+            previewContent.textContent = text;
+        })
+        .catch(e => {
+            previewContent.textContent = "Error: " + e.message;
+        });
 }

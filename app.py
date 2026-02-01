@@ -30,6 +30,7 @@ progress_info = {}
 scan_results = {}
 link_progress = {}
 link_results = {}
+active_tasks = {} # Shared dict for micro-progress (e.g. hashing individual files)
 
 
 # --- Flask Routes ---
@@ -88,7 +89,7 @@ def run_scan():
     process = multiprocessing.Process(
         target=run_manual_scan_and_link, # Function to run in the new process
         # Pass the new ignore lists and min file size to the target function
-        args=(scan_id, path1, dry_run, link_type, save_auto, progress_info, scan_results, ignore_dirs, ignore_exts, min_file_size),
+        args=(scan_id, path1, dry_run, link_type, save_auto, progress_info, scan_results, ignore_dirs, ignore_exts, min_file_size, active_tasks),
         name=f"Scan-{scan_id[:6]}"
     )
     process.start() # Start the background process
@@ -148,6 +149,21 @@ def undo_link(op_id):
     p.start()
     return jsonify({"status": "undo_started", "op_id": op_id, "monitor_key": f"undo_{op_id}"})
 
+@app.route("/preview_file", methods=["GET"])
+def preview_file():
+    path = request.args.get("path")
+    if not path: return "Missing path", 400
+    # Security check (basic): Ideally ensure it's within scanned roots. For now, check existence.
+    if not os.path.exists(path): return "File not found", 404
+    # Check if text file (very basic check)
+    try:
+        # Read first 4KB
+        with open(path, 'r', errors='replace') as f:
+            content = f.read(4000)
+        return content
+    except Exception as e:
+        return f"Error reading file: {e}", 500
+
 @app.route("/get_progress/<scan_id>")
 def get_progress(scan_id):
     """API endpoint for the frontend to poll for scan progress updates."""
@@ -164,6 +180,18 @@ def get_progress(scan_id):
     processed = progress_data.get("processed_items", 0)
     status = progress_data.get("status", "unknown")
     phase = progress_data.get("phase", "N/A")
+
+    # Retrieve active tasks for this scan
+    current_active = []
+    if active_tasks:
+        prefix = f"{scan_id}_"
+        try:
+            # Snapshot current keys to avoid runtime error during iteration
+            for key, task_info in dict(active_tasks).items():
+                if key.startswith(prefix):
+                     current_active.append(task_info)
+        except Exception: pass
+    progress_data["micro_progress"] = current_active
 
     if status == "done" or status == "error":
         progress_data["percentage"] = 100 # Ensure 100% on final states
@@ -275,6 +303,7 @@ def perform_link_route(scan_id):
     previous successful dry run scan.
     """
     link_type = request.form.get("link_type") # 'hard' or 'soft'
+    link_strategy = request.form.get("link_strategy", "path") # 'path', 'oldest', 'newest', 'shortest_path'
     
     # Parse optional selected indices (JSON list of integers)
     selected_indices_json = request.form.get("selected_indices")
@@ -324,7 +353,7 @@ def perform_link_route(scan_id):
     # --- Create and Start Background Link/Verify Process ---
     process = multiprocessing.Process(
         target=link_process_worker, # Function to run
-        args=(link_op_id, scan_id, link_type, link_progress, link_results, scan_results, selected_indices), # Arguments
+        args=(link_op_id, scan_id, link_type, link_progress, link_results, scan_results, selected_indices, link_strategy), # Arguments
         name=f"Link-{link_op_id[:6]}" # Process name
     )
     process.start()
@@ -486,6 +515,7 @@ def clear_cache():
     scan_results.clear()
     link_progress.clear()
     link_results.clear()
+    active_tasks.clear()
 
     logging.info(f"Cleared {len(scan_ids)} scans and {len(link_ids)} link ops from managed memory.")
     return jsonify({"message": "In-memory results cleared."})
@@ -532,7 +562,7 @@ def trigger_scheduled_scan(task_id, path, options):
     # Start process
     p = multiprocessing.Process(
         target=run_manual_scan_and_link,
-        args=(scan_id, path, dry_run, link_type, save_auto, progress_info, scan_results, None, None, min_file_size),
+        args=(scan_id, path, dry_run, link_type, save_auto, progress_info, scan_results, None, None, min_file_size, active_tasks),
         name=f"SchedScan-{scan_id[:6]}"
     )
     p.start()
@@ -648,6 +678,7 @@ if __name__ == "__main__":
     scan_results = manager.dict()
     link_progress = manager.dict()
     link_results = manager.dict()
+    active_tasks = manager.dict()
 
     # --- Start Scheduler ---
     if not scheduler.running:

@@ -8,6 +8,7 @@ import stat
 import psutil
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+import functools
 import shutil
 
 UNDO_DIR = "undo_logs"
@@ -34,21 +35,49 @@ def format_bytes(bytes_val, decimals=2):
     
     return f"{bytes_val / (k**i):.{dm}f} {sizes[i]}"
 
-def calculate_hash(filepath, block_size=65536):
+def calculate_hash(filepath, block_size=65536, scan_id=None, active_tasks=None):
     """
     Calculates the xxHash (64-bit) hash of a file efficiently.
     Reads the file in chunks to avoid loading large files into memory.
+    Updates micro-progress if active_tasks is provided.
     Returns a tuple: (filepath, hexdigest) or (filepath, None) on error.
     """
     hasher = xxhash.xxh3_64()  # xxHash3 is faster on modern CPUs
+    pid = os.getpid()
+    task_key = f"{scan_id}_{pid}" if scan_id else None
+    
     try:
+        file_size = os.path.getsize(filepath)
+        processed = 0
+        
         with open(filepath, 'rb') as f:
             while True:
                 data = f.read(block_size); # Read in chunks
                 if not data: break; # End of file
                 hasher.update(data)
+                
+                # Update micro-progress
+                if active_tasks and task_key and file_size > 0:
+                    processed += len(data)
+                    # Update every ~1MB or so to avoid lock contention, or just let it rip?
+                    # Python's dict update is atomic-ish but let's not spam it too hard.
+                    # Actually, simple assignment is best.
+                    if processed % (1024*1024) == 0 or processed == file_size:
+                        pct = int((processed / file_size) * 100)
+                        active_tasks[task_key] = {"file": filepath, "percentage": pct}
+        
+        # Cleanup task
+        if active_tasks and task_key:
+            try: del active_tasks[task_key]
+            except: pass
+            
         return filepath, hasher.hexdigest() # Return path and the calculated hash
     except (IOError, OSError) as e:
+        # Cleanup task on error
+        if active_tasks and task_key:
+             try: del active_tasks[task_key]
+             except: pass
+             
         # Log warning if a file cannot be hashed (e.g., permission denied)
         logging.warning(f"Could not hash file {filepath}: {e}");
         return filepath, None # Indicate hash failure
@@ -320,7 +349,7 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
     }
     return summary
 
-def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None, min_file_size=0):
+def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None, min_file_size=0, active_tasks_managed=None):
     """
     The main function executed in a separate process to perform the scan and optional linking.
     """
@@ -368,7 +397,7 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                                total_bytes_scanned += filesize
                                # Group files by size; only files meeting minimum size are candidates for duplicates
                                if filesize >= min_file_size and filesize > 0:
-                                   files_by_size[filesize].append({'path': filepath, 'inode': fileinode}) # Store path and inode initially
+                                   files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
                                total_files_found += 1
                                
                                # Memory check every 1000 files
@@ -393,7 +422,7 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
                      filesize = stat_info.st_size; fileinode = stat_info.st_ino
                      total_bytes_scanned += filesize
                      if filesize >= min_file_size and filesize > 0:
-                         files_by_size[filesize].append({'path': filepath, 'inode': fileinode}) # Store path and inode initially
+                         files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
                      total_files_found += 1
                  except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
 
@@ -466,7 +495,9 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
             
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 # Map the calculate_hash function over the list of filepaths
-                hash_results = executor.map(calculate_hash, filepaths_to_full_hash)
+                # Create a partial function with the fixed arguments
+                hash_func = functools.partial(calculate_hash, block_size=65536, scan_id=scan_id, active_tasks=active_tasks_managed)
+                hash_results = executor.map(hash_func, filepaths_to_full_hash)
                 # Process results as they complete
                 for filepath, filehash in hash_results:
                     hashed_file_count += 1
@@ -657,7 +688,7 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
     except Exception as e: error_message = f"Unexpected scan error: {e}"; logging.exception(f"[Scan {scan_id}] Error: "); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
 
 
-def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, link_results_managed, scan_results_managed, selected_indices=None):
+def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, link_results_managed, scan_results_managed, selected_indices=None, link_strategy='path'):
     """
     Worker function run in a background process when linking is triggered from the UI
     after a dry run. It performs linking and then verifies the results.
@@ -691,8 +722,18 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
          # Get summary info (like potential savings) from the original scan
          original_summary = dict(original_scan_result.get("summary", {}))
          potential_savings = original_summary.get("potential_savings", 0)
-         # Ensure sets are sorted for consistent linking (original first)
-         sorted_sets_to_link = [sorted(s, key=lambda x: x['path']) for s in duplicate_sets_to_link if isinstance(s, list) and len(s) > 1] # Note: files within set already sorted by core, but good to be safe
+         
+         # Sort sets based on strategy
+         def get_sort_key(file_info):
+             # Ensure mtime is float/int
+             mtime = file_info.get('mtime', 0)
+             if link_strategy == 'oldest' or link_strategy == 'newest': return (mtime, file_info['path'])
+             if link_strategy == 'shortest_path': return (len(file_info['path']), file_info['path'])
+             return file_info['path']
+
+         reverse_sort = (link_strategy == 'newest')
+         # Ensure sets are sorted for consistent linking (original is index 0)
+         sorted_sets_to_link = [sorted(s, key=get_sort_key, reverse=reverse_sort) for s in duplicate_sets_to_link if isinstance(s, list) and len(s) > 1]
 
          # --- Step 1: Perform Linking ---
          # Call the core linking logic, providing the link progress dict for updates
