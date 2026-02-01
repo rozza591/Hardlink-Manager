@@ -10,6 +10,12 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 import functools
 import shutil
+import signal
+
+class TimeoutException(Exception): pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException()
 
 UNDO_DIR = "undo_logs"
 if not os.path.exists(UNDO_DIR):
@@ -35,7 +41,7 @@ def format_bytes(bytes_val, decimals=2):
     
     return f"{bytes_val / (k**i):.{dm}f} {sizes[i]}"
 
-def calculate_hash(filepath, block_size=65536, scan_id=None, active_tasks=None):
+def calculate_hash(filepath, block_size=1048576, scan_id=None, active_tasks=None):
     """
     Calculates the xxHash (64-bit) hash of a file efficiently.
     Reads the file in chunks to avoid loading large files into memory.
@@ -46,52 +52,86 @@ def calculate_hash(filepath, block_size=65536, scan_id=None, active_tasks=None):
     pid = os.getpid()
     task_key = f"{scan_id}_{pid}" if scan_id else None
     
-    try:
-        file_size = os.path.getsize(filepath)
-        processed = 0
-        
-        with open(filepath, 'rb') as f:
-            while True:
-                data = f.read(block_size); # Read in chunks
-                if not data: break; # End of file
-                hasher.update(data)
-                
-                # Update micro-progress
-                if active_tasks and task_key and file_size > 0:
-                    processed += len(data)
-                    # Update every ~1MB or so to avoid lock contention, or just let it rip?
-                    # Python's dict update is atomic-ish but let's not spam it too hard.
-                    # Actually, simple assignment is best.
-                    if processed % (1024*1024) == 0 or processed == file_size:
-                        pct = int((processed / file_size) * 100)
-                        active_tasks[task_key] = {"file": filepath, "percentage": pct}
-        
-        # Cleanup task
-        if active_tasks and task_key:
-            try: del active_tasks[task_key]
-            except: pass
+    # Retry configuration
+    max_retries = 3
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Re-initialize hasher for each attempt if needed, though usually new instance helps
+            hasher = xxhash.xxh3_64()
+            file_size = os.path.getsize(filepath)
+            processed = 0
             
-        return filepath, hasher.hexdigest() # Return path and the calculated hash
-    except (IOError, OSError) as e:
-        # Cleanup task on error
-        if active_tasks and task_key:
-             try: del active_tasks[task_key]
-             except: pass
-             
-        # Log warning if a file cannot be hashed (e.g., permission denied)
-        logging.warning(f"Could not hash file {filepath}: {e}");
-        return filepath, None # Indicate hash failure
+            with open(filepath, 'rb') as f:
+                # Set up timeout handler
+                original_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                
+                try:
+                    while True:
+                        # Set timeout for read operation (e.g., 10 seconds)
+                        signal.alarm(10)
+                        data = f.read(block_size); # Read in chunks
+                        signal.alarm(0) # Disable alarm after successful read
+                        
+                        if not data: break; # End of file
+                        hasher.update(data)
+                        
+                        # Update micro-progress
+                        if active_tasks and task_key and file_size > 0:
+                            processed += len(data)
+                            if processed % (1024*1024) == 0 or processed == file_size:
+                                pct = int((processed / file_size) * 100)
+                                active_tasks[task_key] = {"file": filepath, "percentage": pct}
+                finally:
+                    # Restore original handler (cleanup)
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, original_handler)
+            
+            # Cleanup task on success
+            if active_tasks and task_key:
+                try: del active_tasks[task_key]
+                except: pass
+                
+            return filepath, hasher.hexdigest() # Return path and the calculated hash
+
+        except (TimeoutException, IOError, OSError) as e:
+            error_msg = f"Attempt {attempt}/{max_retries} failed for {filepath}: {e}"
+            if isinstance(e, TimeoutException):
+                error_msg = f"Attempt {attempt}/{max_retries} timed out reading {filepath}"
+            
+            logging.warning(error_msg)
+            
+            # Cleanup task on error (will effectively restart if retried)
+            if active_tasks and task_key:
+                 try: del active_tasks[task_key]
+                 except: pass
+
+            if attempt == max_retries:
+                logging.error(f"Skipping file {filepath} after {max_retries} failed attempts.")
+                return filepath, None # Indicate hash failure
+            
+            # Optional small delay before retry
+            time.sleep(0.5)
 
 def calculate_hash_partial(filepath, block_size=4096):
     """
-    Calculates the xxHash of the first `block_size` bytes of a file.
-    Used for quick pre-filtering of potential duplicates.
+    Calculates the xxHash of the first bytes AND last bytes of a file.
+    Extremely effective for large video files where metadata might be at either end.
     """
-    hasher = xxhash.xxh3_64()  # xxHash3 is faster on modern CPUs
+    hasher = xxhash.xxh3_64()
     try:
+        size = os.path.getsize(filepath)
         with open(filepath, 'rb') as f:
-            data = f.read(block_size)
-            hasher.update(data)
+            # Read head
+            head_data = f.read(block_size)
+            hasher.update(head_data)
+            
+            # Read tail if file is large enough to have a separate tail
+            if size > block_size * 2:
+                f.seek(-block_size, os.SEEK_END)
+                tail_data = f.read(block_size)
+                hasher.update(tail_data)
+                
         return filepath, hasher.hexdigest()
     except (IOError, OSError) as e:
         logging.warning(f"Could not partial hash file {filepath}: {e}")
@@ -445,8 +485,9 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
             filepaths_to_hash = [info['path'] for info in files_to_hash_info]
             info_map = {info['path']: info for info in files_to_hash_info}
             
-            num_workers = max(1, os.cpu_count() // 2 if os.cpu_count() else 1)
-            logging.info(f"[Scan {scan_id}] Starting parallel partial hash with {num_workers} workers.")
+            # Limit to 1 worker to prevent HDD thrashing (seeking between files)
+            num_workers = 1 
+            logging.info(f"[Scan {scan_id}] Starting optimized sequential scan (HDD safe) with {num_workers} worker.")
             
             partial_hashed_count = 0
             phase_start = time.time()
@@ -496,7 +537,7 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 # Map the calculate_hash function over the list of filepaths
                 # Create a partial function with the fixed arguments
-                hash_func = functools.partial(calculate_hash, block_size=65536, scan_id=scan_id, active_tasks=active_tasks_managed)
+                hash_func = functools.partial(calculate_hash, block_size=1048576, scan_id=scan_id, active_tasks=active_tasks_managed)
                 hash_results = executor.map(hash_func, filepaths_to_full_hash)
                 # Process results as they complete
                 for filepath, filehash in hash_results:
