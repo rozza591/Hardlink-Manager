@@ -467,35 +467,6 @@ def download_pdf_route(scan_id):
         return jsonify({"error": f"Internal error: {e}"}), 500
 
 
-@app.route("/get_results/<scan_id>")
-def get_results_route(scan_id):
-    """
-    API endpoint for the frontend to retrieve the final results of a completed scan.
-    Only returns results if the scan status is 'done' or 'error'.
-    """
-    # Check if scan exists in the results dictionary
-    result_proxy = scan_results.get(scan_id)
-    if not result_proxy:
-        # If not in results, check if it's still in progress or queued
-        progress = progress_info.get(scan_id)
-        if progress:
-             # Scan exists but not finished
-             return jsonify({"status": progress.get("status", "unknown")})
-        return jsonify({"error": "Scan ID not found"}), 404
-        
-    # Convert proxy to regular dict
-    final_result = dict(result_proxy)
-
-    # Determine availability of downloadables
-    download_available = False
-    try:
-        # Check if JSON file exists
-        file_path = f"scan_results_{scan_id}.json"
-        if os.path.exists(file_path): download_available = True
-    except Exception: pass
-    
-    final_result["download_json_available"] = download_available
-    final_result["download_pdf_available"] = True # PDF download is now available
 
 
 @app.route("/clear_cache", methods=["POST"])
