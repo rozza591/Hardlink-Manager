@@ -37,7 +37,26 @@ Hardlink Manager is a powerful, web-based tool designed to optimize disk space b
 
 ## Setup & Running
 
-### Using Docker (Recommended)
+### Unraid Deployment (Recommended for Unraid)
+
+Hardlink-Manager is optimized for Unraid and supports automatic updates via the GitHub Container Registry (GHCR).
+
+1.  **Host the Image:** Ensure your GitHub repository has Actions enabled. The included `.github/workflows/docker-publish.yml` will automatically build and push the image to `ghcr.io/YOUR_USERNAME/Hardlink-Manager:latest` whenever you push to the `main` branch.
+2.  **Add Container to Unraid:**
+    *   Open the **Docker** tab in Unraid.
+    *   Click **Add Container** at the bottom.
+    *   **Manual Method:** Fill in the following:
+        *   **Name:** Hardlink-Manager
+        *   **Repository:** `ghcr.io/YOUR_USERNAME/Hardlink-Manager:latest` (Replace `YOUR_USERNAME` with your GitHub name).
+        *   **WebUI:** `http://[IP]:[PORT:5000]`
+        *   **Port:** 5000 (Host/Container).
+        *   **Path: /config:** Map this to `/mnt/user/appdata/hardlink-manager`.
+        *   **Path: /data:** Map this to the data you want to scan (e.g., `/mnt/user/data`).
+        *   **Variable: CONFIG_DIR:** Set to `/config`.
+    *   **Template Method:** Download the `unraid-template.xml` provided in this repo and place it in `/boot/config/plugins/dockerMan/templates-user/` on your Unraid flash drive. It will then appear in the "Template" dropdown when adding a container.
+3.  **Automatic Updates:** Unraid will automatically check for changes in the `latest` tag on GHCR. When you push a code change to GitHub, the "Update" button will appear in the Unraid GUI within a few minutes.
+
+### Using Docker Compose
 
 1.  **Prerequisites:** Docker and Docker Compose installed.
 2.  **Configure Volume:** Edit the `docker-compose.yml` file. 
@@ -52,9 +71,11 @@ Hardlink Manager is a powerful, web-based tool designed to optimize disk space b
         ports:
           - "5000:5000"
         volumes:
-          - /path/to/your/data/on/host:/data
+          - /mnt/user/appdata/hardlink-manager:/config
+          - /mnt/user/data:/data
         environment:
           - LOG_LEVEL=INFO
+          - CONFIG_DIR=/config
           - PORT=5000
     ```
 

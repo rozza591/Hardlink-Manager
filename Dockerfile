@@ -16,7 +16,13 @@ COPY . .
 # Expose the default port
 EXPOSE 5000
 
-# Set the default log level to INFO. This can be overridden when running the container.
+# Environment variables
 ENV LOG_LEVEL=INFO
+ENV CONFIG_DIR=/config
+ENV PORT=5000
+ENV PYTHONUNBUFFERED=1
+
+# Ensure config directory exists
+RUN mkdir -p /config
 
 CMD ["python", "app.py"]

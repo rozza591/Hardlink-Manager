@@ -18,16 +18,18 @@ class TimeoutException(Exception): pass
 def timeout_handler(signum, frame):
     raise TimeoutException()
 
-UNDO_DIR = Path("undo_logs")
+# --- Configuration ---
+CONFIG_DIR = os.getenv('CONFIG_DIR', '.')
+UNDO_DIR = Path(CONFIG_DIR) / "undo_logs"
 if not UNDO_DIR.exists():
     try:
         UNDO_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception: pass # Be tolerant if parallel procs try to create
+    except Exception: pass
 
-INTERNAL_HISTORY_DIR = "scan_history"
+INTERNAL_HISTORY_DIR = os.path.join(CONFIG_DIR, "scan_history")
 if not os.path.exists(INTERNAL_HISTORY_DIR):
     try:
-        os.makedirs(INTERNAL_HISTORY_DIR)
+        os.makedirs(INTERNAL_HISTORY_DIR, exist_ok=True)
     except Exception: pass
 
 

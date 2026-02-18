@@ -22,9 +22,11 @@ app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', os.urandom(24)) # Secre
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(processName)s - %(message)s')
 
-HISTORY_DIR = "scan_history"
+# --- Configuration ---
+CONFIG_DIR = os.getenv('CONFIG_DIR', '.')
+HISTORY_DIR = os.path.join(CONFIG_DIR, "scan_history")
 if not os.path.exists(HISTORY_DIR):
-    os.makedirs(HISTORY_DIR)
+    os.makedirs(HISTORY_DIR, exist_ok=True)
 
 # --- Shared State Placeholders ---
 # These specific variables will be initialized with multiprocessing.Manager objects 
@@ -602,7 +604,7 @@ def static_files(filename):
 
 # --- Scheduler Setup ---
 scheduler = BackgroundScheduler()
-SCHEDULE_FILE = "schedules.json"
+SCHEDULE_FILE = os.path.join(CONFIG_DIR, "schedules.json")
 
 def trigger_scheduled_scan(task_id, path, options):
     """
