@@ -471,6 +471,17 @@ button:disabled {
     /* Darker yellow */
 }
 
+#link-actions button.delete-btn {
+    background-color: #dc3545;
+    /* Red */
+    color: white;
+}
+
+#link-actions button.delete-btn:hover {
+    background-color: #c82333;
+    /* Darker red */
+}
+
 /* --- Error Message Style --- */
 #error-message {
     color: #dc3545;

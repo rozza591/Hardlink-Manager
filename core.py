@@ -6,6 +6,7 @@ import json
 import multiprocessing
 import stat
 import psutil
+from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 import functools
@@ -17,11 +18,17 @@ class TimeoutException(Exception): pass
 def timeout_handler(signum, frame):
     raise TimeoutException()
 
-UNDO_DIR = "undo_logs"
-if not os.path.exists(UNDO_DIR):
+UNDO_DIR = Path("undo_logs")
+if not UNDO_DIR.exists():
     try:
-        os.makedirs(UNDO_DIR)
+        UNDO_DIR.mkdir(parents=True, exist_ok=True)
     except Exception: pass # Be tolerant if parallel procs try to create
+
+INTERNAL_HISTORY_DIR = "scan_history"
+if not os.path.exists(INTERNAL_HISTORY_DIR):
+    try:
+        os.makedirs(INTERNAL_HISTORY_DIR)
+    except Exception: pass
 
 
 # --- Helper Functions ---
@@ -52,6 +59,7 @@ def calculate_hash(filepath, block_size=1048576, scan_id=None, active_tasks=None
     pid = os.getpid()
     task_key = f"{scan_id}_{pid}" if scan_id else None
     
+    path = Path(filepath)
     # Retry configuration
     max_retries = 3
     
@@ -119,9 +127,10 @@ def calculate_hash_partial(filepath, block_size=4096):
     Extremely effective for large video files where metadata might be at either end.
     """
     hasher = xxhash.xxh3_64()
+    path = Path(filepath)
     try:
-        size = os.path.getsize(filepath)
-        with open(filepath, 'rb') as f:
+        size = path.stat().st_size
+        with path.open('rb') as f:
             # Read head
             head_data = f.read(block_size)
             hasher.update(head_data)
@@ -132,10 +141,10 @@ def calculate_hash_partial(filepath, block_size=4096):
                 tail_data = f.read(block_size)
                 hasher.update(tail_data)
                 
-        return filepath, hasher.hexdigest()
+        return str(path), hasher.hexdigest()
     except (IOError, OSError) as e:
         logging.warning(f"Could not partial hash file {filepath}: {e}")
-        return filepath, None
+        return str(path), None
 
 def calculate_eta(start_time, processed_items, total_items):
     """Calculates estimated time remaining in seconds."""
@@ -189,13 +198,13 @@ def is_ignored(filepath, ignore_dirs, ignore_exts):
     """
     Checks if a file should be ignored based on directory names or file extension.
     """
+    path = Path(filepath)
     # Check extension
-    if any(filepath.lower().endswith(ext) for ext in ignore_exts):
+    if path.suffix.lower() in ignore_exts:
         return True
         
     # Check if any part of the path matches an ignored directory
-    parts = filepath.split(os.sep)
-    if any(d in parts for d in ignore_dirs):
+    if any(d in path.parts for d in ignore_dirs):
         return True
         
     return False
@@ -275,7 +284,7 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
 
     Args:
         op_id (str): Identifier for the operation (can be scan_id or link_op_id).
-        link_type (str): 'hard' or 'soft'.
+        link_type (str): 'hard', 'soft', or 'delete'.
         duplicate_sets_with_info (list): List of duplicate sets, where each set is a
                                          list of file info dicts [{'path':..., 'inode':..., 'hash':...}, ...],
                                          sorted with the intended original first.
@@ -287,9 +296,12 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
         dict: Summary of the linking operation {'action_taken', 'files_linked', 'files_failed', 'op_name'}.
     """
     files_linked = 0; files_failed = 0
-    link_op_name = "Hardlinking" if link_type == 'hard' else "Softlinking"
-    # Choose the correct linking function based on type
-    link_function = os.link if link_type == 'hard' else os.symlink
+    if link_type == 'delete':
+        link_op_name = "Deletion"
+        link_function = None
+    else:
+        link_op_name = "Hardlinking" if link_type == 'hard' else "Softlinking"
+        link_function = os.link if link_type == 'hard' else os.symlink
     # Calculate total number of links to create (one less than files per set)
     total_links_to_attempt = sum(len(s)-1 for s in duplicate_sets_with_info if len(s)>1)
     links_attempted = 0
@@ -337,8 +349,10 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
                  else:
                       # Log if the duplicate was already gone (might happen in rare cases)
                       logging.warning(f"[{op_id}] Duplicate path did not exist before linking: {duplicate_path}")
-                 # 4. Create the hard or soft link
-                 link_function(original_path, duplicate_path)
+                 # 4. Create the hard or soft link, or just delete if that was the request
+                 if link_type != 'delete':
+                     link_function(original_path, duplicate_path)
+                 
                  files_linked += 1 # Increment success counter
                  
                  # Record for undo
@@ -389,22 +403,27 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
     }
     return summary
 
-def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None, min_file_size=0, active_tasks_managed=None):
+def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_automatically, progress_info_managed, scan_results_managed, ignore_dirs=None, ignore_exts=None, min_file_size=0, active_tasks_managed=None):
     """
     The main function executed in a separate process to perform the scan and optional linking.
+    Accepts a list of paths to scan.
     """
     start_time = time.time() # Capture start time for duration calculation
-    logging.info(f"[Scan {scan_id}] Started manual scan for: {path1}. Dry Run: {dry_run}, Link Type: {link_type}, Min Size: {min_file_size}")
+    
+    # Ensure scan_paths is a list (for backward compatibility if single string passed)
+    if isinstance(scan_paths, str): scan_paths = [scan_paths]
+    
+    logging.info(f"[Scan {scan_id}] Started manual scan for: {scan_paths}. Dry Run: {dry_run}, Link Type: {link_type}, Min Size: {min_file_size}")
     
     try:
         # Initial progress update
         update_progress(progress_info_managed, scan_id, {"status": "Starting scan...", "phase": "Finding Files", "percentage": 0, "processed_items": 0, "total_items": 0})
-        logging.info(f"[Scan {scan_id}] Starting scan: path={path1}, dry_run={dry_run}, link_type={link_type}, save_auto={save_automatically}")
+        logging.info(f"[Scan {scan_id}] Starting scan: paths={scan_paths}, dry_run={dry_run}, link_type={link_type}, save_auto={save_automatically}")
 
         # --- Phase 1: File Discovery and Size Grouping ---
         files_by_size = defaultdict(list) # {filesize: [{'path': ..., 'inode': ...}, ...]}
         total_files_found = 0; total_bytes_scanned = 0
-        update_progress(progress_info_managed, scan_id, {"phase": "Finding Files", "status": "Walking directory..."})
+        update_progress(progress_info_managed, scan_id, {"phase": "Finding Files", "status": "Walking directories..."})
 
         if ignore_dirs is None: ignore_dirs = []
         if ignore_exts is None: ignore_exts = []
@@ -412,59 +431,74 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
         # Clean extensions (ensure they start with dot and are lowercase)
         clean_ignore_exts = [e.lower() if e.startswith('.') else f'.{e.lower()}' for e in ignore_exts]
         
-        # Iterate through the top-level entries in the target directory
-        for entry in os.scandir(path1):
-            if entry.name in ignore_dirs: continue # Skip top-level ignored dirs
-            if entry.is_dir(follow_symlinks=False):
-                 # Recursively walk through subdirectories
-                 for dirpath, dirs, filenames in os.walk(entry.path):
-                     # Modify dirs in-place to skip ignored directories during walk
-                     dirs[:] = [d for d in dirs if d not in ignore_dirs]
-                     
-                     # Update progress periodically for large directories
-                     relative_dir = os.path.relpath(dirpath, path1)
-                     status_update = f"Found {total_files_found} files. Scanning: .{os.sep}{relative_dir}"
-                     if total_files_found % 100 == 0: update_progress(progress_info_managed, scan_id, {"status": status_update, "processed_items": total_files_found})
-                     for filename in filenames:
-                           filepath = os.path.join(dirpath, filename)
-                           if is_ignored(filepath, [], clean_ignore_exts): continue # Check ext (dirs handled above)
-                           try:
-                               # Use lstat to get info without following symlinks
-                               stat_info = os.lstat(filepath)
-                               # Skip symbolic links during initial scan
-                               if stat.S_ISLNK(stat_info.st_mode): continue
-                               filesize = stat_info.st_size; fileinode = stat_info.st_ino
-                               total_bytes_scanned += filesize
-                               # Group files by size; only files meeting minimum size are candidates for duplicates
-                               if filesize >= min_file_size and filesize > 0:
-                                   files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
-                               total_files_found += 1
-                               
-                               # Memory check every 1000 files
-                               if total_files_found % 1000 == 0:
-                                   if check_memory_and_warn(scan_id, progress_info_managed) > 95:
-                                       raise MemoryError("Memory usage exceeded 95%. Aborting scan to prevent system crash.")
-                                       
-                               # Check for pause/cancellation every 100 files
-                               if total_files_found % 100 == 0:
-                                   wait_if_paused(scan_id, progress_info_managed)
-                                   if is_scan_cancelled(scan_id, progress_info_managed):
-                                       raise InterruptedError("Scan cancelled by user request.")
-                                       
-                           except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
-            elif entry.is_file(follow_symlinks=False):
-                 # Handle files directly in the root scanning directory
-                 filepath = entry.path
-                 if is_ignored(filepath, [], clean_ignore_exts): continue
-                 try:
-                     stat_info = entry.stat(follow_symlinks=False)
-                     if stat.S_ISLNK(stat_info.st_mode): continue # Skip symlinks
-                     filesize = stat_info.st_size; fileinode = stat_info.st_ino
-                     total_bytes_scanned += filesize
-                     if filesize >= min_file_size and filesize > 0:
-                         files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
-                     total_files_found += 1
-                 except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
+        # Iterate through each provided root path
+        for root_path in scan_paths:
+            if not os.path.exists(root_path):
+                logging.warning(f"Skipping non-existent path: {root_path}")
+                continue
+                
+            logging.info(f"Scanning directory: {root_path}")
+            
+            # Iterate through the top-level entries in the target directory
+            try:
+                with os.scandir(root_path) as it:
+                    for entry in it:
+                        if entry.name in ignore_dirs: continue # Skip top-level ignored dirs
+                        if entry.is_dir(follow_symlinks=False):
+                             # Recursively walk through subdirectories
+                             for dirpath, dirs, filenames in os.walk(entry.path):
+                                 # Modify dirs in-place to skip ignored directories during walk
+                                 dirs[:] = [d for d in dirs if d not in ignore_dirs]
+                                 
+                                 # Update progress periodically for large directories
+                                 relative_dir = os.path.relpath(dirpath, root_path)
+                                 # Limit length of displayed path
+                                 display_path = relative_dir if len(relative_dir) < 40 else "..." + relative_dir[-37:]
+                                 status_update = f"Found {total_files_found} files. Scanning: ...{os.sep}{display_path}"
+                                 
+                                 if total_files_found % 100 == 0: update_progress(progress_info_managed, scan_id, {"status": status_update, "processed_items": total_files_found})
+                                 for filename in filenames:
+                                       filepath = os.path.join(dirpath, filename)
+                                       if is_ignored(filepath, [], clean_ignore_exts): continue # Check ext (dirs handled above)
+                                       try:
+                                           # Use lstat to get info without following symlinks
+                                           stat_info = os.lstat(filepath)
+                                           # Skip symbolic links during initial scan
+                                           if stat.S_ISLNK(stat_info.st_mode): continue
+                                           filesize = stat_info.st_size; fileinode = stat_info.st_ino
+                                           total_bytes_scanned += filesize
+                                           # Group files by size; only files meeting minimum size are candidates for duplicates
+                                           if filesize >= min_file_size and filesize > 0:
+                                               files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
+                                           total_files_found += 1
+                                           
+                                           # Memory check every 1000 files
+                                           if total_files_found % 1000 == 0:
+                                               if check_memory_and_warn(scan_id, progress_info_managed) > 95:
+                                                   raise MemoryError("Memory usage exceeded 95%. Aborting scan to prevent system crash.")
+                                                   
+                                           # Check for pause/cancellation every 100 files
+                                           if total_files_found % 100 == 0:
+                                               wait_if_paused(scan_id, progress_info_managed)
+                                               if is_scan_cancelled(scan_id, progress_info_managed):
+                                                   raise InterruptedError("Scan cancelled by user request.")
+                                                   
+                                       except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
+                        elif entry.is_file(follow_symlinks=False):
+                             # Handle files directly in the root scanning directory
+                             filepath = entry.path
+                             if is_ignored(filepath, [], clean_ignore_exts): continue
+                             try:
+                                 stat_info = entry.stat(follow_symlinks=False)
+                                 if stat.S_ISLNK(stat_info.st_mode): continue # Skip symlinks
+                                 filesize = stat_info.st_size; fileinode = stat_info.st_ino
+                                 total_bytes_scanned += filesize
+                                 if filesize >= min_file_size and filesize > 0:
+                                     files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
+                                 total_files_found += 1
+                             except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
+            except OSError as e:
+                logging.error(f"Error accessing root path {root_path}: {e}")
 
         # Update progress after directory walk
         update_progress(progress_info_managed, scan_id, {"total_items": total_files_found, "processed_items": total_files_found, "status": "Directory scan complete"})
@@ -645,8 +679,9 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
         # The 'duplicates' list now contains file dictionaries that include the 'hash' key
         result_data = {
             "summary": {
-                "scan_path": path1,
+                "scan_path": scan_paths,
                 "no_duplicates": total_duplicate_sets == 0, # Flag if no duplicates found at all
+                "total_files": total_files_found,           # Total number of files scanned
                 "potential_savings": potential_savings,     # Bytes saved if linking occurs
                 "before_size": total_bytes_scanned,         # Total size of all scanned files
                 "after_size": after_size_theoretical,      # Theoretical size after potential linking
@@ -712,18 +747,23 @@ def run_manual_scan_and_link(scan_id, path1, dry_run, link_type, save_automatica
         update_progress(progress_info_managed, scan_id, {"status": final_status, "percentage": 100, "phase": "Complete" if final_status == "done" else "Error"})
         logging.info(f"[Scan {scan_id}] Scan finished {duration:.2f}s. Final Status: {final_status}. Action: {result_data['summary']['action_taken']}")
 
-        # --- Auto-save Results (if requested and successful) ---
+        # --- Internal Persistence (Always save for history) ---
+        if final_status == "done":
+             save_results_to_file(scan_id, result_data, INTERNAL_HISTORY_DIR)
+
+        # --- Auto-save Results (User-requested location) ---
         if save_automatically and final_status == "done":
-            logging.info(f"[Scan {scan_id}] Auto-save requested. Attempting to save results to input directory: {path1}")
-            # Attempt to save JSON
-            json_saved = save_results_to_file(scan_id, result_data, path1)
+            logging.info(f"[Scan {scan_id}] Auto-save requested. Attempting to save results to input directories.")
+            # Attempt to save JSON to the first path
+            save_path = scan_paths[0] if scan_paths else "."
+            json_saved = save_results_to_file(scan_id, result_data, save_path)
 
             if not json_saved: # Check only JSON save status
-                 logging.warning(f"[Scan {scan_id}] Auto-save failed for JSON file type.")
+                 logging.warning(f"[Scan {scan_id}] Auto-save failed to {save_path}.")
 
     # --- Error Handling for the entire scan process ---
-    except FileNotFoundError: error_message = f"Path not found: {path1}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
-    except PermissionError: error_message = f"Permission denied accessing path or subdirectories: {path1}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
+    except FileNotFoundError: error_message = f"Path not found in: {scan_paths}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
+    except PermissionError: error_message = f"Permission denied accessing paths: {scan_paths}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
     except InterruptedError: error_message = "Scan cancelled by user."; logging.info(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "cancelled", "phase": "Cancelled"}); result_data={"error": error_message, "summary": {"action_taken": "Scan cancelled by user."}, "duplicates": []}; scan_results_managed[scan_id] = result_data
     except MemoryError as e: error_message = f"Memory limit exceeded: {e}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
     except Exception as e: error_message = f"Unexpected scan error: {e}"; logging.exception(f"[Scan {scan_id}] Error: "); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data

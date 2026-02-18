@@ -22,6 +22,10 @@ app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', os.urandom(24)) # Secre
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(processName)s - %(message)s')
 
+HISTORY_DIR = "scan_history"
+if not os.path.exists(HISTORY_DIR):
+    os.makedirs(HISTORY_DIR)
+
 # --- Shared State Placeholders ---
 # These specific variables will be initialized with multiprocessing.Manager objects 
 # inside the __main__ block to ensure safe processing on macOS/Window (spawn method).
@@ -45,9 +49,14 @@ def run_scan():
     logging.info(f"Received form data: {request.form.to_dict()}")
 
     # Extract parameters from the form
-    path1 = request.form.get("path1"); # Target directory
+    scan_paths = request.form.getlist("scan_paths")
+    if not scan_paths:
+         # Fallback to single path1 for backward compatibility
+         p1 = request.form.get("path1")
+         if p1: scan_paths = [p1]
+    
     dry_run = "dryrun" in request.form # Is it a dry run?
-    use_hardlinks = "hardlink" in request.form; use_softlinks = "softlink" in request.form # Link type selection
+    use_hardlinks = "hardlink" in request.form; use_softlinks = "softlink" in request.form; use_delete = "delete" in request.form
     save_auto = "save_auto" in request.form
     
     # Parse ignore lists
@@ -71,11 +80,42 @@ def run_scan():
     link_type = None;
     if use_hardlinks: link_type = 'hard'
     elif use_softlinks: link_type = 'soft'
+    elif use_delete: link_type = 'delete'
 
-    # Basic validation
-    if not path1:
-        logging.error(f"Validation failed: path1 is missing or empty in received data.")
-        return jsonify({"error": "Directory path required."}), 400 # Bad request
+    # Basic validation and path sanitization
+    sanitized_paths = []
+    if not scan_paths:
+        return jsonify({"error": "Directory paths required."}), 400
+
+    for p in scan_paths:
+        if not p.strip(): continue
+        abs_p = os.path.abspath(p.strip())
+        
+        if not os.path.exists(abs_p):
+            return jsonify({"error": f"Path does not exist: {p}"}), 400
+        if not os.path.isdir(abs_p):
+            return jsonify({"error": f"Path is not a directory: {p}"}), 400
+            
+        # Security checks
+        blocked = ["/etc", "/var", "/root", "/proc", "/sys", "/dev"]
+        if any(abs_p.startswith(b) for b in blocked):
+             return jsonify({"error": f"Access denied to sensitive system path: {p}"}), 403
+        
+        sanitized_paths.append(abs_p)
+
+    if not sanitized_paths:
+        return jsonify({"error": "No valid directory paths provided."}), 400
+        
+    # Remove nested paths (optimization)
+    unique_paths = sorted(list(set(sanitized_paths)), key=len)
+    final_paths = []
+    for p in unique_paths:
+        # Check if p is a subdir of any path already in final_paths
+        # This requires final_paths to contain shorter parent paths first (guaranteed by sort)
+        if not any(p.startswith(parent + os.sep) for parent in final_paths):
+            final_paths.append(p)
+    
+    scan_paths = final_paths
 
     # Generate a unique ID for this scan
     scan_id = str(uuid.uuid4())
@@ -83,19 +123,47 @@ def run_scan():
     progress_info[scan_id] = {"status":"queued","phase":"queued","total_items":0,"processed_items":0, "percentage": 0}
     scan_results[scan_id] = None # Placeholder for results
 
-    logging.info(f"Queuing scan {scan_id} for path: {path1}. Ignoring dirs: {ignore_dirs}, exts: {ignore_exts}, min_size: {min_file_size}")
+    logging.info(f"Queuing scan {scan_id} for paths: {scan_paths}. Ignoring dirs: {ignore_dirs}, exts: {ignore_exts}, min_size: {min_file_size}")
 
     # --- Create and Start Background Process ---
     process = multiprocessing.Process(
         target=run_manual_scan_and_link, # Function to run in the new process
         # Pass the new ignore lists and min file size to the target function
-        args=(scan_id, path1, dry_run, link_type, save_auto, progress_info, scan_results, ignore_dirs, ignore_exts, min_file_size, active_tasks),
+        args=(scan_id, scan_paths, dry_run, link_type, save_auto, progress_info, scan_results, ignore_dirs, ignore_exts, min_file_size, active_tasks),
         name=f"Scan-{scan_id[:6]}"
     )
     process.start() # Start the background process
 
     # Return the scan ID to the frontend so it can poll for progress
     return jsonify({"status": "scan process started", "scan_id": scan_id})
+
+@app.route("/get_active_task", methods=["GET"])
+def get_active_task():
+    """
+    API endpoint to discover any currently running scan or link operation.
+    Used by the frontend to auto-resume progress monitoring.
+    """
+    # Check for active scans
+    # status can be 'queued', 'scanning', 'comparing', 'hashing', etc.
+    # Terminal statuses: 'done', 'error', 'cancelled'
+    for scan_id, info in progress_info.items():
+        if info.get("status") not in ["done", "error", "cancelled"]:
+            return jsonify({
+                "type": "scan",
+                "id": scan_id,
+                "data": dict(info) # Convert proxy to dict
+            })
+
+    # Check for active link operations
+    for op_id, info in link_progress.items():
+        if info.get("status") not in ["done", "error"]:
+            return jsonify({
+                "type": "link",
+                "id": op_id,
+                "data": dict(info)
+            })
+
+    return jsonify({"active_task": None})
 
 @app.route("/cancel_scan/<scan_id>", methods=["POST"])
 def cancel_scan(scan_id):
@@ -153,8 +221,21 @@ def undo_link(op_id):
 def preview_file():
     path = request.args.get("path")
     if not path: return "Missing path", 400
-    # Security check (basic): Ideally ensure it's within scanned roots. For now, check existence.
+    
+    # Normalize path
+    path = os.path.abspath(path)
+    
+    # Security check: For now, ensure it's not a sensitive system path 
+    # and strictly check existence. In a more restricted environment, 
+    # we would check if it's within a permitted root.
+    blocked_patterns = ["/etc/", "/var/", "/root/", "/proc/", "/sys/"]
+    if any(pattern in path for pattern in blocked_patterns):
+        logging.warning(f"Blocked preview attempt for sensitive path: {path}")
+        return "Access denied to sensitive path", 403
+
     if not os.path.exists(path): return "File not found", 404
+    if not os.path.isfile(path): return "Path is not a file", 400
+
     # Check if text file (very basic check)
     try:
         # Read first 4KB
@@ -229,8 +310,18 @@ def get_results_route(scan_id):
 
     # If status is done/error, but results are somehow missing (shouldn't happen ideally)
     if result is None:
-        logging.warning(f"Scan {scan_id} status '{current_status}' but result is None.");
-        return jsonify({"error": "Internal error: Results missing.", "status": "error"}), 500 # Internal server error
+        # Check persistence layer
+        history_file = os.path.join(HISTORY_DIR, f"scan_results_{scan_id}.json")
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, 'r') as f:
+                    result = json.load(f)
+            except Exception as e:
+                logging.error(f"Error loading persistent result for {scan_id}: {e}")
+        
+        if result is None:
+            logging.warning(f"Scan {scan_id} status '{current_status}' but result is None.");
+            return jsonify({"error": "Internal error: Results missing.", "status": "error"}), 500 # Internal server error
 
     # Prepare results for frontend: convert proxies, remove raw data
     frontend_result = dict(result) # Convert main proxy
@@ -318,8 +409,8 @@ def perform_link_route(scan_id):
             selected_indices = None
 
     # Validate link type
-    if not link_type or link_type not in ['hard', 'soft']:
-        return jsonify({"error": "Invalid link type specified ('hard' or 'soft')."}), 400
+    if not link_type or link_type not in ['hard', 'soft', 'delete']:
+        return jsonify({"error": "Invalid link type specified ('hard', 'soft', 'delete')."}), 400
 
     # Retrieve the original scan results
     original_scan_result_proxy = scan_results.get(scan_id)

@@ -36,9 +36,9 @@ def generate_pdf_report(scan_data, output_path):
     elements.append(Paragraph("Scan Summary", styles['Heading2']))
     
     data = [
-        ["Scan Path", summary.get("scan_path", "N/A")],
+        ["Scan Path", str(summary.get("scan_path", "N/A"))],
         ["Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-        ["Total Files Scanned", "N/A"], # Not explicitly stored in simple summary, can derive?
+        ["Total Files Scanned", str(summary.get("total_files", "N/A"))],
         ["Before Size", format_bytes(summary.get("before_size", 0))],
         ["Potential Savings", format_bytes(summary.get("potential_savings", 0))],
         ["Duplicate Sets Found", str(summary.get("total_sets_found", 0))],

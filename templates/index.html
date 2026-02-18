@@ -5,7 +5,7 @@
     <title>Hardlink Manager</title>
     <link rel="icon" href="/static/logos/favicon.ico" type="image/x-icon">
     <link rel="stylesheet" href="/static/style.css">
-    <script src="/static/app.js" defer></script>
+    <script type="module" src="/static/js/main.js"></script>
 </head>
 
 <body>
@@ -19,9 +19,18 @@
 
         <form id="scan-form">
             <div class="form-group">
-                <label for="path1">Directory Path:</label>
-                <input type="text" id="path1" name="path1" required placeholder="/data/media">
-                <small>Enter the full path accessible by the server (e.g., `/data/movies`).</small>
+                <label>Directory Paths:</label>
+                <div id="paths-container">
+                    <div class="path-input-row" style="display:flex; gap:10px; margin-bottom:5px;">
+                        <input type="text" name="scan_paths" required placeholder="/data/media">
+                        <button type="button" class="remove-path-btn"
+                            style="background:#dc3545; padding:5px 10px; margin:0;" onclick="removePathInput(this)"
+                            disabled>×</button>
+                    </div>
+                </div>
+                <button type="button" id="add-path-btn" class="secondary-btn" style="margin-top:5px; font-size:0.8em;">+
+                    Add Another Path</button>
+                <small>Enter full paths accessible by the server. Scan across multiple directories.</small>
             </div>
 
             <div class="form-grid">
@@ -44,6 +53,12 @@
                     <label class="option-label" title="Simulates the process without making changes.">
                         <input type="checkbox" id="dryrun" name="dryrun" checked onchange="handleDryRunSelection(this)">
                         Dry Run (No changes)
+                    </label>
+                </div>
+                <div class="option-card">
+                    <label class="option-label" title="Permanently deletes duplicate files. Use with caution.">
+                        <input type="checkbox" id="delete" name="delete" onchange="handleLinkTypeSelection(this)">
+                        Delete Duplicates
                     </label>
                 </div>
                 <div class="option-card">
@@ -161,6 +176,7 @@
                 </div>
                 <button id="perform-hardlink-btn" data-link-type="hard">Perform Hard Link</button>
                 <button id="perform-softlink-btn" data-link-type="soft" class="softlink">Perform Soft Link</button>
+                <button id="perform-delete-btn" data-link-type="delete" class="delete-btn">Delete Duplicates</button>
             </div>
             <div id="filter-controls" class="filter-controls" style="display:none;">
                 <div class="filter-row">
