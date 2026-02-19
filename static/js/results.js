@@ -6,6 +6,7 @@
 import State from './state.js';
 import UI from './ui.js';
 import API from './api.js';
+import Wizard from './wizard.js';
 
 const Results = {
     init() {
@@ -110,14 +111,12 @@ const Results = {
             const data = await API.performLink(scanId, type, 'path');
             UI.showNotification(`Starting ${type} operation...`, 'info');
 
-            // Re-use wizard Step 3 for tracking link progress?
-            // For now, let's just go back to dashboard and notify completion via pooling (if we had a global tracker)
             State.setActiveTask(data.link_op_id, 'link');
             State.setView('wizard');
             State.setWizardStep(3);
 
-            // We'd need to update Wizard module to handle polling for LINK tasks too
-            // Let's assume Wizard.startPolling handles it or we add a generic Task module
+            // Start polling for the linking operation
+            Wizard.startPolling(data.link_op_id, 'link');
         } catch (error) {
             UI.showNotification(error.message, 'danger');
         }

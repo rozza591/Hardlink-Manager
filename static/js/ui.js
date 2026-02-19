@@ -117,6 +117,16 @@ const UI = {
         const m = Math.floor(seconds / 60);
         const s = Math.floor(seconds % 60);
         return `${m}m ${s}s`;
+    },
+
+    escapeHtml(unsafe) {
+        if (typeof unsafe !== 'string') return unsafe;
+        return unsafe
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
     }
 };
 

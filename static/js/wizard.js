@@ -160,6 +160,24 @@ const Wizard = {
         if (countLabel) countLabel.textContent = data.processed_items || 0;
         if (totalLabel) totalLabel.textContent = data.total_items || 0;
 
+        // Update Micro Progress
+        const microList = document.getElementById('wizard-micro-list');
+        if (microList && data.micro_progress && data.micro_progress.length > 0) {
+            let html = '';
+            data.micro_progress.slice(0, 3).forEach(task => {
+                const fileName = task.file.split('/').pop();
+                html += `<li style="margin-bottom: 5px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom: 2px;">
+                        <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;">${UI.escapeHtml(fileName)}</span>
+                        <span>${task.percentage}%</span>
+                    </div>
+                </li>`;
+            });
+            microList.innerHTML = html;
+        } else if (microList) {
+            microList.innerHTML = '<li style="text-align:center; font-style:italic;">Analyzing file structures...</li>';
+        }
+
         const pauseBtn = document.getElementById('wizard-pause-btn');
         if (pauseBtn) {
             // Links don't have pause usually in core.py, but we'll show it if supported
