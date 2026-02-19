@@ -584,6 +584,60 @@ def clear_cache():
     logging.info(f"Cleared {len(scan_ids)} scans and {len(link_ids)} link ops from managed memory.")
     return jsonify({"message": "In-memory results cleared."})
 
+@app.route("/get_history")
+def get_history():
+    """
+    Retrieves a list of past scan results from the HISTORY_DIR.
+    """
+    history = []
+    if not os.path.exists(HISTORY_DIR):
+        return jsonify([])
+        
+    try:
+        for filename in os.listdir(HISTORY_DIR):
+            if filename.startswith("scan_results_") and filename.endswith(".json"):
+                path = os.path.join(HISTORY_DIR, filename)
+                try:
+                    # Get file stats
+                    stats = os.stat(path)
+                    created_at = datetime.fromtimestamp(stats.st_ctime).isoformat()
+                    
+                    # Read basic info from JSON without loading large duplicate lists if possible
+                    # But since we want summary stats for dashboard, we load it
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                        summary = data.get("summary", {})
+                        history.append({
+                            "scan_id": data.get("scan_id", filename.replace("scan_results_", "").replace(".json", "")),
+                            "date": created_at,
+                            "summary": summary,
+                            "filename": filename
+                        })
+                except Exception as e:
+                    logging.error(f"Error reading history file {filename}: {e}")
+        
+        # Sort by date descending
+        history.sort(key=lambda x: x['date'], reverse=True)
+        return jsonify(history)
+    except Exception as e:
+        logging.error(f"Error getting history: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/delete_history/<scan_id>", methods=["DELETE"])
+def delete_history(scan_id):
+    """
+    Deletes a specific history file.
+    """
+    filename = f"scan_results_{scan_id}.json"
+    path = os.path.join(HISTORY_DIR, filename)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+            return jsonify({"status": "deleted", "scan_id": scan_id})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "History file not found"}), 404
+
 @app.route("/")
 def index():
     """Serves the main HTML page (frontend UI)."""

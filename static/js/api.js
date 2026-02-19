@@ -1,26 +1,98 @@
-export async function handleFetchResponse(response) {
-    if (!response.ok) {
-        let errorDetail = `HTTP ${response.status}`;
-        try {
-            const errorData = await response.json();
-            errorDetail = errorData.error || JSON.stringify(errorData);
-        } catch (e) { }
-        throw new Error(errorDetail);
-    }
-    return response.json();
-}
+/**
+ * API Module for Hardlink Manager
+ * Handles all communication with the Flask backend.
+ */
 
-export const api = {
-    runScan: (formData) => fetch("/run_scan", { method: "POST", body: formData }).then(handleFetchResponse),
-    cancelScan: (scanId) => fetch(`/cancel_scan/${scanId}`, { method: "POST" }).then(handleFetchResponse),
-    pauseScan: (scanId) => fetch(`/pause_scan/${scanId}`, { method: "POST" }).then(handleFetchResponse),
-    resumeScan: (scanId) => fetch(`/resume_scan/${scanId}`, { method: "POST" }).then(handleFetchResponse),
-    performLink: (scanId, formData) => fetch(`/perform_link/${scanId}`, { method: "POST", body: formData }).then(handleFetchResponse),
-    getProgress: (scanId) => fetch(`/get_progress/${scanId}`).then(handleFetchResponse),
-    getLinkProgress: (linkOpId) => fetch(`/get_link_progress/${linkOpId}`).then(handleFetchResponse),
-    getResults: (scanId) => fetch(`/get_results/${scanId}`).then(handleFetchResponse),
-    getLinkResult: (linkOpId) => fetch(`/get_link_result/${linkOpId}`).then(handleFetchResponse),
-    clearCache: () => fetch("/clear_cache", { method: "POST" }).then(handleFetchResponse),
-    getSchedules: () => fetch("/get_schedules").then(handleFetchResponse),
-    getActiveTask: () => fetch("/get_active_task").then(handleFetchResponse)
+const API = {
+    async fetchJson(url, options = {}) {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+            let errorText = `HTTP error! status: ${response.status}`;
+            try {
+                const err = await response.json();
+                errorText = err.error || errorText;
+            } catch (e) { }
+            throw new Error(errorText);
+        }
+        return await response.json();
+    },
+
+    // Scan Operations
+    startScan(formData) {
+        return this.fetchJson('/run_scan', {
+            method: 'POST',
+            body: formData
+        });
+    },
+
+    getScanProgress(scanId) {
+        return this.fetchJson(`/get_progress/${scanId}`);
+    },
+
+    getScanResults(scanId) {
+        return this.fetchJson(`/get_results/${scanId}`);
+    },
+
+    cancelScan(scanId) {
+        return this.fetchJson(`/cancel_scan/${scanId}`, { method: 'POST' });
+    },
+
+    togglePause(scanId, isPaused) {
+        const action = isPaused ? 'resume_scan' : 'pause_scan';
+        return this.fetchJson(`/${action}/${scanId}`, { method: 'POST' });
+    },
+
+    // Linking Operations
+    performLink(scanId, linkType, strategy, selectedIndices = null) {
+        const formData = new FormData();
+        formData.append('link_type', linkType);
+        formData.append('link_strategy', strategy);
+        if (selectedIndices) {
+            formData.append('selected_indices', JSON.stringify(selectedIndices));
+        }
+        return this.fetchJson(`/perform_link/${scanId}`, {
+            method: 'POST',
+            body: formData
+        });
+    },
+
+    getLinkProgress(linkOpId) {
+        return this.fetchJson(`/get_link_progress/${linkOpId}`);
+    },
+
+    getLinkResult(linkOpId) {
+        return this.fetchJson(`/get_link_result/${linkOpId}`);
+    },
+
+    // History & Global
+    getHistory() {
+        return this.fetchJson('/get_history');
+    },
+
+    deleteHistory(scanId) {
+        return this.fetchJson(`/delete_history/${scanId}`, { method: 'DELETE' });
+    },
+
+    clearCache() {
+        return this.fetchJson('/clear_cache', { method: 'POST' });
+    },
+
+    // Schedules
+    getSchedules() {
+        return this.fetchJson('/get_schedules');
+    },
+
+    addSchedule(data) {
+        return this.fetchJson('/add_schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+    },
+
+    deleteSchedule(jobId) {
+        return this.fetchJson(`/delete_schedule/${jobId}`, { method: 'DELETE' });
+    }
 };
+
+export default API;

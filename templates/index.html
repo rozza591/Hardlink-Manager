@@ -1,270 +1,299 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Hardlink Manager</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hardlink Manager | Deduplicate & Save Space</title>
     <link rel="icon" href="/static/logos/favicon.ico" type="image/x-icon">
-    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono&display=swap"
+        rel="stylesheet">
+
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/css/variables.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+
+    <!-- Application -->
     <script type="module" src="/static/js/main.js"></script>
 </head>
 
 <body>
-    <div class="dark-toggle" id="darkToggle">Dark Mode</div>
+    <div class="app-wrapper">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <img src="/static/logos/hardlink-manager-logo-3.png" alt="Logo">
+                <h2>Hardlink Manager</h2>
+            </div>
 
-    <div class="container">
-        <div class="header-container">
-            <img src="/static/logos/hardlink-manager-logo-3.png" alt="Logo" class="logo">
-            <h1>Hardlink Manager</h1>
-        </div>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-view="dashboard">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-view="wizard">
+                    <i class="fas fa-plus-circle"></i>
+                    <span>New Scan</span>
+                </a>
+                <a href="#" class="nav-item" data-view="schedules">
+                    <i class="fas fa-clock"></i>
+                    <span>Schedules</span>
+                </a>
+                <a href="#" class="nav-item" data-view="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </a>
+            </nav>
 
-        <form id="scan-form">
-            <div class="form-group">
-                <label>Directory Paths:</label>
-                <div id="paths-container">
-                    <div class="path-input-row" style="display:flex; gap:10px; margin-bottom:5px;">
-                        <input type="text" name="scan_paths" required placeholder="/data/media">
-                        <button type="button" class="remove-path-btn"
-                            style="background:#dc3545; padding:5px 10px; margin:0;" onclick="removePathInput(this)"
-                            disabled>×</button>
+            <div class="sidebar-footer" style="padding: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
+                <button id="theme-toggle" class="btn btn-outline"
+                    style="width: 100%; color: white; border-color: rgba(255,255,255,0.2);">
+                    <i class="fas fa-moon"></i>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+
+            <!-- VIEW: DASHBOARD -->
+            <section id="dashboard-view" class="view-section active">
+                <header class="view-header">
+                    <h1>Dashboard</h1>
+                    <p>Welcome back. Here's your storage optimization summary.</p>
+                </header>
+
+                <div class="stats-grid"
+                    style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px; margin-bottom: 30px;">
+                    <div class="card" style="margin-bottom: 0;">
+                        <span
+                            style="color: var(--text-muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase;">Total
+                            Space Saved</span>
+                        <h3 id="total-saved-stat" style="font-size: 2rem; margin: 10px 0 0 0; color: var(--success);">0
+                            <span>Bytes</span>
+                        </h3>
+                    </div>
+                    <div class="card" style="margin-bottom: 0;">
+                        <span
+                            style="color: var(--text-muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase;">Last
+                            Scan Run</span>
+                        <h3 id="last-scan-stat" style="font-size: 2rem; margin: 10px 0 0 0;">Never</h3>
+                    </div>
+                    <div class="card" style="margin-bottom: 0;">
+                        <span
+                            style="color: var(--text-muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase;">Health
+                            Score</span>
+                        <h3 style="font-size: 2rem; margin: 10px 0 0 0; color: var(--primary);">Optimal</h3>
                     </div>
                 </div>
-                <button type="button" id="add-path-btn" class="secondary-btn" style="margin-top:5px; font-size:0.8em;">+
-                    Add Another Path</button>
-                <small>Enter full paths accessible by the server. Scan across multiple directories.</small>
-            </div>
 
-            <div class="form-grid">
-                <!-- Row 1: Checkbox Options -->
-                <div class="option-card">
-                    <label class="option-label" title="Files share the same data on disk. Saves space instantly.">
-                        <input type="checkbox" id="hardlink" name="hardlink" checked
-                            onchange="handleLinkTypeSelection(this)">
-                        Hard Links (Recommended)
-                    </label>
-                </div>
-                <div class="option-card">
-                    <label class="option-label"
-                        title="Creates a symbolic reference. Good for cross-filesystem (not here).">
-                        <input type="checkbox" id="softlink" name="softlink" onchange="handleLinkTypeSelection(this)">
-                        Soft Links (Symbolic)
-                    </label>
-                </div>
-                <div class="option-card">
-                    <label class="option-label" title="Simulates the process without making changes.">
-                        <input type="checkbox" id="dryrun" name="dryrun" checked onchange="handleDryRunSelection(this)">
-                        Dry Run (No changes)
-                    </label>
-                </div>
-                <div class="option-card">
-                    <label class="option-label" title="Permanently deletes duplicate files. Use with caution.">
-                        <input type="checkbox" id="delete" name="delete" onchange="handleLinkTypeSelection(this)">
-                        Delete Duplicates
-                    </label>
-                </div>
-                <div class="option-card">
-                    <label class="option-label"
-                        title="Automatically save results to a JSON file in the scan directory.">
-                        <input type="checkbox" id="save_auto" name="save_auto">
-                        Auto-Save Results (JSON)
-                    </label>
-                </div>
-            </div>
-
-            <div class="form-grid" style="margin-top: 15px;">
-                <!-- Row 2: Ignore Patterns -->
-                <div class="input-card">
-                    <label for="ignore_dirs">Ignore Directories:</label>
-                    <input type="text" id="ignore_dirs" name="ignore_dirs" placeholder="e.g. .git, tmp, node_modules">
-                </div>
-                <div class="input-card">
-                    <label for="ignore_exts">Ignore Extensions:</label>
-                    <input type="text" id="ignore_exts" name="ignore_exts" placeholder="e.g. .log, .tmp, .bak">
-                </div>
-            </div>
-
-            <div class="form-grid" style="margin-top: 15px;">
-                <!-- Row 3: Size Filter -->
-                <div class="input-card">
-                    <label for="min_file_size">Minimum File Size:</label>
-                    <div class="size-input-group">
-                        <input type="number" id="min_file_size" name="min_file_size" min="0" value="0" placeholder="0">
-                        <select id="min_file_size_unit" name="min_file_size_unit">
-                            <option value="B">Bytes</option>
-                            <option value="KB">KB</option>
-                            <option value="MB" selected>MB</option>
-                            <option value="GB">GB</option>
-                        </select>
+                <div class="grid-main" style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px;">
+                    <div class="card">
+                        <div class="card-title">
+                            <span>Recent Scans</span>
+                            <a href="#" class="btn btn-outline btn-small" style="font-size: 0.8rem;">View All</a>
+                        </div>
+                        <div id="history-list">
+                            <!-- Populated by JS -->
+                        </div>
                     </div>
-                    <small>Files smaller than this will be skipped.</small>
-                </div>
-            </div>
 
-            <div class="button-group">
-                <button type="submit" id="submit-btn">Start Scan</button>
-                <button type="button" id="clear-cache-btn">Clear Results</button>
-                <button type="button" id="open-scheduler-btn" class="secondary-btn">Manage Schedules</button>
-            </div>
-        </form>
-
-        <div id="status-message">
-            <div class="progress-phases" id="progress-phases">
-                <span class="progress-phase" data-phase="Finding Files">Finding</span>
-                <span class="progress-phase" data-phase="Pre-Hashing">Pre-Hash</span>
-                <span class="progress-phase" data-phase="Full Hashing">Hashing</span>
-                <span class="progress-phase" data-phase="Analyzing Hashes">Analyzing</span>
-                <span class="progress-phase" data-phase="Linking Files">Linking</span>
-                <span class="progress-phase" data-phase="Complete">Done</span>
-            </div>
-            <div id="status-phase">Initializing...</div>
-            <div id="status-details">Please wait.</div>
-            <div class="progress-bar-container">
-                <div class="progress-bar" id="progress-bar-inner"></div>
-            </div>
-            <!-- Micro Progress Container -->
-            <div id="micro-progress-container" style="display:none; margin-top: 5px; font-size: 0.85em; color: #666;">
-                <ul id="micro-progress-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-            </div>
-            <div id="status-stats" class="status-stats">
-                <span id="status-count"></span>
-                <span id="status-eta"></span>
-            </div>
-            <div class="control-buttons">
-                <button type="button" id="pause-scan-btn" class="pause-btn" style="display:none;">Pause</button>
-                <button type="button" id="cancel-scan-btn" class="cancel-btn" style="display:none;">Cancel Scan</button>
-            </div>
-        </div>
-
-        <div id="error-message"></div>
-
-        <div id="results">
-            <h2>Scan Results</h2>
-            <div class="results-button-bar">
-                <button type="button" id="download-json-btn" class="secondary-btn">Download JSON</button>
-                <button type="button" id="download-pdf-btn" class="secondary-btn">Download PDF</button>
-            </div>
-            <div id="summary-stats">
-                <p><strong>Overall Status:</strong> <span id="result-action">N/A</span></p>
-                <hr>
-                <p><strong>Initial Size:</strong> <span id="result-before-size">N/A</span></p>
-                <p><strong>Final Size (Theoretical):</strong> <span id="result-after-size">N/A</span></p>
-                <p><strong>Space Saved:</strong> <span id="result-savings">N/A</span></p>
-
-                <p><strong>Duration:</strong> <span id="result-duration">N/A</span></p>
-
-                <div class="space-viz-container" id="space-viz" style="display:none; margin-top: 15px;">
-                    <label>Space Usage (Estim.)</label>
-                    <div class="viz-bar-wrapper">
-                        <div class="viz-bar-used" id="viz-bar-used" style="width: 100%;"></div>
-                        <div class="viz-bar-saved" id="viz-bar-saved" style="width: 0%;"></div>
-                    </div>
-                    <div class="viz-legend">
-                        <span class="legend-item"><span class="color-box used"></span> Final Size</span>
-                        <span class="legend-item"><span class="color-box saved"></span> Savings</span>
+                    <div class="card">
+                        <div class="card-title">Quick Actions</div>
+                        <button class="btn btn-primary" style="width: 100%; margin-bottom: 12px;"
+                            onclick="document.querySelector('[data-view=wizard]').click()">
+                            <i class="fas fa-plus"></i> New Scan
+                        </button>
+                        <button class="btn btn-outline" style="width: 100%;"
+                            onclick="document.querySelector('[data-view=schedules]').click()">
+                            <i class="fas fa-calendar"></i> Manage Schedules
+                        </button>
                     </div>
                 </div>
-            </div>
-            <div id="link-actions">
-                <p>Perform linking based on this dry run?</p>
-                <div class="strategy-options" style="margin-bottom:10px;">
-                    <label>Keep Strategy:</label>
-                    <select id="link-strategy">
-                        <option value="path">Alphabetical (Default)</option>
-                        <option value="oldest">Keep Oldest File</option>
-                        <option value="newest">Keep Newest File</option>
-                        <option value="shortest_path">Keep Shortest Path</option>
-                    </select>
-                </div>
-                <button id="perform-hardlink-btn" data-link-type="hard">Perform Hard Link</button>
-                <button id="perform-softlink-btn" data-link-type="soft" class="softlink">Perform Soft Link</button>
-                <button id="perform-delete-btn" data-link-type="delete" class="delete-btn">Delete Duplicates</button>
-            </div>
-            <div id="filter-controls" class="filter-controls" style="display:none;">
-                <div class="filter-row">
-                    <div class="filter-group">
-                        <label for="filter-path">Filter by path:</label>
-                        <input type="text" id="filter-path" placeholder="Type to search paths..." />
-                    </div>
-                    <div class="filter-group">
-                        <label for="filter-min-size">Min set size:</label>
-                        <select id="filter-min-size">
-                            <option value="0">All sizes</option>
-                            <option value="1048576">≥ 1 MB</option>
-                            <option value="10485760">≥ 10 MB</option>
-                            <option value="104857600">≥ 100 MB</option>
-                            <option value="1073741824">≥ 1 GB</option>
-                        </select>
-                    </div>
-                    <div class="filter-group">
-                        <button type="button" id="clear-filter-btn" class="secondary-btn">Clear Filters</button>
-                    </div>
-                </div>
-                <div id="filter-info" class="filter-info"></div>
-            </div>
-            <div id="duplicates">
-            </div>
-            <div id="pagination-controls" class="pagination-controls" style="display:none;">
-                <button id="prev-page-btn" class="page-btn">Previous</button>
-                <span id="page-info">Page 1 of 1</span>
-                <button id="next-page-btn" class="page-btn">Next</button>
-                <select id="page-size-select" class="page-select">
-                    <option value="10">10 per page</option>
-                    <option value="25" selected>25 per page</option>
-                    <option value="50">50 per page</option>
-                    <option value="100">100 per page</option>
-                </select>
-            </div>
-        </div>
-    </div>
-    </div>
+            </section>
 
-    <!-- Scheduler Modal -->
-    <div id="scheduler-modal" class="modal">
-        <div class="modal-content">
-            <span class="close-modal">&times;</span>
-            <h2>Scheduled Scans</h2>
-            <div id="schedule-list">
-                <p>Loading...</p>
-            </div>
+            <!-- VIEW: WIZARD -->
+            <section id="wizard-view" class="view-section">
+                <header class="view-header">
+                    <h1>New Scan</h1>
+                    <p>Configure and run a deduplication analysis.</p>
+                </header>
 
-            <hr>
-            <h3>Add New Schedule</h3>
-            <div class="schedule-form">
-                <div class="form-group">
-                    <label>Name</label>
-                    <input type="text" id="sched-name" placeholder="Daily Backup Scan">
-                </div>
-                <div class="form-group">
-                    <label>Path</label>
-                    <input type="text" id="sched-path" placeholder="/data">
-                </div>
-                <div class="form-group">
-                    <label>Frequency</label>
-                    <select id="sched-cron-preset">
-                        <option value="0 0 * * *">Daily (Midnight)</option>
-                        <option value="0 2 * * *">Daily (2 AM)</option>
-                        <option value="0 0 * * 0">Weekly (Sunday)</option>
-                        <option value="custom">Custom Cron...</option>
-                    </select>
-                    <input type="text" id="sched-cron-custom" placeholder="* * * * *"
-                        style="display:none; margin-top:5px;">
-                </div>
-                <div class="form-group">
-                    <label><input type="checkbox" id="sched-dryrun" checked> Dry Run Only</label>
-                    <label><input type="checkbox" id="sched-hardlink"> Auto-Link (Hard)</label>
-                </div>
-                <button type="button" id="add-schedule-btn">Save Schedule</button>
-            </div>
-        </div>
-    </div>
+                <div class="card">
+                    <!-- Progress Steps -->
+                    <div class="steps-container">
+                        <div class="step active" data-step="1">
+                            <div class="step-circle">1</div>
+                            <span class="step-label">Scope</span>
+                        </div>
+                        <div class="step" data-step="2">
+                            <div class="step-circle">2</div>
+                            <span class="step-label">Strategy</span>
+                        </div>
+                        <div class="step" data-step="3">
+                            <div class="step-circle">3</div>
+                            <span class="step-label">Analysis</span>
+                        </div>
+                        <div class="step" data-step="4">
+                            <div class="step-circle">4</div>
+                            <span class="step-label">Review</span>
+                        </div>
+                    </div>
 
-    <!-- Preview Modal -->
-    <div id="preview-modal" class="modal">
-        <div class="modal-content">
-            <span class="close-modal" id="close-preview-modal">&times;</span>
-            <h3 id="preview-title">File Preview</h3>
-            <pre id="preview-content"
-                style="background:#f4f4f4; padding:10px; overflow:auto; max-height:400px; white-space: pre-wrap; color: black;"></pre>
-        </div>
+                    <!-- STEP 1: SCOPE -->
+                    <div id="step-1-content" class="step-content active">
+                        <h3>Where should we look?</h3>
+                        <p style="color: var(--text-muted); margin-bottom: 24px;">Add the directory paths you want to
+                            scan for duplicate files.</p>
+
+                        <div id="wizard-paths-container">
+                            <div class="path-row">
+                                <input type="text" placeholder="/path/to/media" class="wizard-path-input">
+                                <button class="btn btn-danger btn-icon" disabled><i class="fas fa-trash"></i></button>
+                            </div>
+                        </div>
+                        <button class="btn btn-outline btn-small" id="wizard-add-path-btn" style="margin-top: 10px;">
+                            <i class="fas fa-plus"></i> Add Another Path
+                        </button>
+
+                        <div
+                            style="margin-top: 40px; border-top: 1px solid var(--border); padding-top: 20px; display: flex; justify-content: flex-end;">
+                            <button class="btn btn-primary" id="wizard-next-1">Next: Choose Strategy <i
+                                    class="fas fa-arrow-right"></i></button>
+                        </div>
+                    </div>
+
+                    <!-- STEP 2: STRATEGY -->
+                    <div id="step-2-content" class="step-content" style="display:none;">
+                        <h3>Choose your strategy</h3>
+                        <p style="color: var(--text-muted); margin-bottom: 24px;">Define how you want to handle
+                            duplicate files when found.</p>
+
+                        <div class="strategy-grid">
+                            <div class="strategy-card selected" data-strategy="report">
+                                <i class="fas fa-file-alt"></i>
+                                <h4>Report Only</h4>
+                                <p>Safest. Analyzes files and provides a report without making changes.</p>
+                            </div>
+                            <div class="strategy-card" data-strategy="hard">
+                                <i class="fas fa-link"></i>
+                                <h4>Hardlink</h4>
+                                <p>Replaces duplicates with hardlinks. Saves space immediately.</p>
+                            </div>
+                            <div class="strategy-card" data-strategy="delete">
+                                <i class="fas fa-trash-alt"></i>
+                                <h4>Delete</h4>
+                                <p>Deletes duplicate files. Use with extreme caution.</p>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 30px;">
+                            <button class="btn btn-outline" id="wizard-toggle-advanced" style="font-size: 0.85rem;">
+                                <i class="fas fa-sliders-h"></i> Advanced Filters
+                            </button>
+
+                            <div id="wizard-advanced-filters"
+                                style="display:none; margin-top: 20px; padding: 20px; background: var(--bg-main); border-radius: var(--border-radius);">
+                                <div class="form-group">
+                                    <label>Minimum File Size</label>
+                                    <div style="display:flex; gap:10px;">
+                                        <input type="number" id="wizard-min-size" value="1" style="flex:1;">
+                                        <select id="wizard-size-unit" style="width: 100px;">
+                                            <option value="MB">MB</option>
+                                            <option value="GB">GB</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Exclude Patterns (comma separated)</label>
+                                    <input type="text" id="wizard-ignore-dirs"
+                                        placeholder="e.g. .git, tmp, node_modules">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div
+                            style="margin-top: 40px; border-top: 1px solid var(--border); padding-top: 20px; display: flex; justify-content: space-between;">
+                            <button class="btn btn-outline" id="wizard-prev-2"><i class="fas fa-arrow-left"></i>
+                                Back</button>
+                            <button class="btn btn-primary" id="wizard-start-btn">Start Analysis <i
+                                    class="fas fa-rocket"></i></button>
+                        </div>
+                    </div>
+
+                    <!-- STEP 3: ANALYSIS -->
+                    <div id="step-3-content" class="step-content" style="display:none; text-align: center;">
+                        <h3>Performing Analysis...</h3>
+                        <p style="color: var(--text-muted); margin-bottom: 40px;">Please wait while we scan and hash
+                            your files.</p>
+
+                        <div class="gauge-container">
+                            <svg class="gauge-svg" viewBox="0 0 100 100">
+                                <circle class="gauge-bg" cx="50" cy="50" r="45"></circle>
+                                <circle id="wizard-gauge-fill" class="gauge-fill" cx="50" cy="50" r="45"
+                                    stroke-dasharray="0 283"></circle>
+                            </svg>
+                            <div class="gauge-text">
+                                <div id="wizard-progress-pct" class="gauge-pct">0%</div>
+                                <div id="wizard-phase-label" class="gauge-label">Initializing</div>
+                            </div>
+                        </div>
+
+                        <div id="wizard-stats" style="margin-top: 30px; font-weight: 500;">
+                            <span id="wizard-processed-count">0</span> / <span id="wizard-total-count">0</span> files
+                        </div>
+
+                        <div style="margin-top: 40px; display: flex; justify-content: center; gap: 12px;">
+                            <button class="btn btn-outline" id="wizard-pause-btn"><i class="fas fa-pause"></i>
+                                Pause</button>
+                            <button class="btn btn-danger" id="wizard-cancel-btn"><i class="fas fa-times"></i>
+                                Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW: RESULTS -->
+            <section id="results-view" class="view-section">
+                <!-- Populated by results.js -->
+            </section>
+
+            <!-- VIEW: SCHEDULES -->
+            <section id="schedules-view" class="view-section">
+                <!-- Populated by schedules.js -->
+            </section>
+
+            <!-- VIEW: SETTINGS -->
+            <section id="settings-view" class="view-section">
+                <header class="view-header">
+                    <h1>Settings</h1>
+                    <p>Configure global application behavior.</p>
+                </header>
+                <div class="card">
+                    <div class="form-group">
+                        <label>Report Storage</label>
+                        <p style="font-size: 0.85rem; color:var(--text-muted);">Reports are currently saved to
+                            <code>/scan_history</code>.</p>
+                    </div>
+                    <div class="form-group">
+                        <label>Application Version</label>
+                        <p>Hardlink Manager v2.0 (Reimagined)</p>
+                    </div>
+                    <button class="btn btn-danger" id="purge-cache-btn">
+                        <i class="fas fa-trash"></i> Purge All cached results
+                    </button>
+                </div>
+            </section>
+        </main>
     </div>
 </body>
 
