@@ -5,16 +5,29 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # UNRAID TIP: Map direct disk paths (e.g. /mnt/cache/share) 
+      # UNRAID TIP: Map direct disk paths (e.g. /mnt/cache/share or /mnt/disk1/share)
       # instead of /mnt/user/share to bypass FUSE overhead for faster scans.
       - /mnt/user/your_data:/data
+      # Persist hash cache and scan metadata
+      - ./config:/config
     environment:
       - LOG_LEVEL=INFO
       - PYTHONUNBUFFERED=1
       - PORT=5000
+      # --- Optimisation Settings ---
+      # Number of parallel hash workers: 1 for HDD parity array, 2-4 for SSD cache pool
+      - HASH_WORKERS=1
+      # Partial hash block size in KB (default 512): Larger = better discrimination for large video files
+      - PARTIAL_HASH_KB=512
+      # Full hash read block size in MB (default 8): Larger = fewer syscalls on sequential HDD reads
+      - HASH_BLOCK_MB=8
+      # I/O timeout per read operation in seconds (default 60): Increase for slow network storage or loaded arrays
+      - IO_TIMEOUT_SECONDS=60
     deploy:
       resources:
         limits:
-          # Change this value to ~80% of your system RAM.
-          # Example: If you have 16GB, set this to 12.8G.
-          memory: 4G
+          # Memory limit: Set to ~80% of your system RAM for large libraries.
+          # For 100TB+ libraries: 16G recommended.
+          # For smaller libraries (< 50TB): 8G sufficient.
+          # Minimum: 4G for basic operation.
+          memory: 8G

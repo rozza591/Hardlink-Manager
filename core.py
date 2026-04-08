@@ -32,6 +32,179 @@ if not os.path.exists(INTERNAL_HISTORY_DIR):
         os.makedirs(INTERNAL_HISTORY_DIR, exist_ok=True)
     except Exception: pass
 
+# --- Optimisation Configuration ---
+HASH_WORKERS = int(os.getenv('HASH_WORKERS', '1'))  # Number of parallel hash workers (1 for HDD, 2-4 for SSD)
+PARTIAL_HASH_KB = int(os.getenv('PARTIAL_HASH_KB', '512'))  # Partial hash block size in KB (default 512KB)
+HASH_BLOCK_MB = int(os.getenv('HASH_BLOCK_MB', '8'))  # Full hash read block size in MB (default 8MB)
+IO_TIMEOUT_SECONDS = int(os.getenv('IO_TIMEOUT_SECONDS', '60'))  # I/O timeout per read operation (default 60s)
+
+# --- SQLite Hash Cache Setup ---
+HASH_CACHE_DB = os.path.join(CONFIG_DIR, "hash_cache.db")
+HASH_CACHE_LOCK = multiprocessing.Lock()  # Lock for SQLite access across processes
+
+def init_hash_cache():
+    """Initialize the hash cache SQLite database with proper schema."""
+    import sqlite3
+    conn = sqlite3.connect(HASH_CACHE_DB, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")  # Better concurrency
+    conn.execute("PRAGMA synchronous=NORMAL")  # Balance safety and performance
+    conn.execute("""CREATE TABLE IF NOT EXISTS file_hashes (
+        absolute_path TEXT PRIMARY KEY,
+        file_size INTEGER NOT NULL,
+        mtime REAL NOT NULL,
+        partial_hash TEXT,
+        full_hash TEXT,
+        updated_at REAL NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mtime ON file_hashes(mtime)")
+    conn.commit()
+    conn.close()
+
+def get_cached_hash(filepath, file_size, mtime, hash_type='full'):
+    """
+    Get a hash from cache if file hasn't changed.
+    Returns None if not found or file has changed.
+    """
+    import sqlite3
+    try:
+        with HASH_CACHE_LOCK:
+            conn = sqlite3.connect(HASH_CACHE_DB, timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT partial_hash, full_hash FROM file_hashes WHERE absolute_path=? AND file_size=? AND mtime=?",
+                (filepath, file_size, mtime)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                partial, full = row
+                return full if hash_type == 'full' else partial
+    except Exception as e:
+        logging.warning(f"Hash cache read error for {filepath}: {e}")
+    return None
+
+def cache_hash(filepath, file_size, mtime, partial_hash=None, full_hash=None):
+    """Store hash results in cache."""
+    import sqlite3
+    import time
+    try:
+        with HASH_CACHE_LOCK:
+            conn = sqlite3.connect(HASH_CACHE_DB, timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """INSERT OR REPLACE INTO file_hashes 
+                   (absolute_path, file_size, mtime, partial_hash, full_hash, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (filepath, file_size, mtime, partial_hash, full_hash, time.time())
+            )
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logging.warning(f"Hash cache write error for {filepath}: {e}")
+
+# Initialize cache on module load
+init_hash_cache()
+
+# --- Per-Scan SQLite Metadata Storage ---
+SCAN_METADATA_DIR = os.path.join(CONFIG_DIR, "scan_metadata")
+if not os.path.exists(SCAN_METADATA_DIR):
+    try:
+        os.makedirs(SCAN_METADATA_DIR, exist_ok=True)
+    except Exception: pass
+
+# --- Scan Checkpoint/Resume ---
+CHECKPOINT_DIR = os.path.join(CONFIG_DIR, "checkpoints")
+if not os.path.exists(CHECKPOINT_DIR):
+    try:
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    except Exception: pass
+
+def get_checkpoint_key(scan_paths):
+    """Generate a unique key for the checkpoint based on scan paths."""
+    return "|".join(sorted(scan_paths))
+
+def save_checkpoint(scan_id, scan_paths, total_files_found, total_bytes_scanned):
+    """Save Phase 1 checkpoint for resume capability."""
+    checkpoint_file = os.path.join(CHECKPOINT_DIR, f"{scan_id}.json")
+    try:
+        with open(checkpoint_file, 'w') as f:
+            json.dump({
+                "scan_id": scan_id,
+                "scan_paths": scan_paths,
+                "total_files_found": total_files_found,
+                "total_bytes_scanned": total_bytes_scanned,
+                "timestamp": time.time()
+            }, f)
+        logging.info(f"[Scan {scan_id}] Checkpoint saved.")
+    except Exception as e:
+        logging.warning(f"[Scan {scan_id}] Failed to save checkpoint: {e}")
+
+def load_checkpoint(scan_id):
+    """Load checkpoint data if exists."""
+    checkpoint_file = os.path.join(CHECKPOINT_DIR, f"{scan_id}.json")
+    try:
+        if os.path.exists(checkpoint_file):
+            with open(checkpoint_file, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logging.warning(f"Failed to load checkpoint {scan_id}: {e}")
+    return None
+
+def delete_checkpoint(scan_id):
+    """Delete checkpoint file."""
+    checkpoint_file = os.path.join(CHECKPOINT_DIR, f"{scan_id}.json")
+    try:
+        if os.path.exists(checkpoint_file):
+            os.remove(checkpoint_file)
+    except Exception as e:
+        logging.warning(f"Failed to delete checkpoint {scan_id}: {e}")
+
+def create_scan_metadata_db(scan_id):
+    """Create a SQLite database for storing scan metadata on disk."""
+    import sqlite3
+    db_path = os.path.join(SCAN_METADATA_DIR, f"scan_{scan_id}.db")
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("""CREATE TABLE IF NOT EXISTS discovered_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filepath TEXT NOT NULL UNIQUE,
+        filesize INTEGER NOT NULL,
+        inode INTEGER NOT NULL,
+        mtime REAL NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_filesize ON discovered_files(filesize)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS partial_hashes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filepath TEXT NOT NULL UNIQUE,
+        filesize INTEGER NOT NULL,
+        partial_hash TEXT NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_partial ON partial_hashes(filesize, partial_hash)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS full_hashes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filepath TEXT NOT NULL UNIQUE,
+        filesize INTEGER NOT NULL,
+        full_hash TEXT NOT NULL,
+        inode INTEGER NOT NULL,
+        mtime REAL NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_full ON full_hashes(filesize, full_hash)")
+    conn.commit()
+    conn.close()
+    return db_path
+
+def cleanup_scan_metadata_db(scan_id):
+    """Remove the scan metadata database after scan completion."""
+    db_path = os.path.join(SCAN_METADATA_DIR, f"scan_{scan_id}.db")
+    try:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+            logging.info(f"[Scan {scan_id}] Cleaned up metadata database.")
+    except Exception as e:
+        logging.warning(f"[Scan {scan_id}] Failed to cleanup metadata database: {e}")
+
 
 # --- Helper Functions ---
 
@@ -50,18 +223,36 @@ def format_bytes(bytes_val, decimals=2):
     
     return f"{bytes_val / (k**i):.{dm}f} {sizes[i]}"
 
-def calculate_hash(filepath, block_size=1048576, scan_id=None, active_tasks=None):
+def calculate_hash(filepath, block_size=None, scan_id=None, active_tasks=None):
     """
     Calculates the xxHash (64-bit) hash of a file efficiently.
     Reads the file in chunks to avoid loading large files into memory.
     Updates micro-progress if active_tasks is provided.
+    Checks hash cache first to avoid re-hashing unchanged files.
     Returns a tuple: (filepath, hexdigest) or (filepath, None) on error.
     """
-    hasher = xxhash.xxh3_64()  # xxHash3 is faster on modern CPUs
+    if block_size is None:
+        block_size = HASH_BLOCK_MB * 1024 * 1024  # Use configured block size (default 8MB)
+    
+    path = Path(filepath)
     pid = os.getpid()
     task_key = f"{scan_id}_{pid}" if scan_id else None
     
-    path = Path(filepath)
+    # Check cache first (before any I/O)
+    try:
+        file_size = path.stat().st_size
+        mtime = path.stat().st_mtime
+        cached_hash = get_cached_hash(str(path), file_size, mtime, hash_type='full')
+        if cached_hash:
+            # Update micro-progress as if we processed it
+            if active_tasks and task_key:
+                active_tasks[task_key] = {"file": filepath, "percentage": 100}
+            return filepath, cached_hash
+    except OSError:
+        pass  # Fall through to full hash if stat fails
+    
+    # Not in cache, compute full hash
+    hasher = xxhash.xxh3_64()  # xxHash3 is faster on modern CPUs
     # Retry configuration
     max_retries = 3
     
@@ -78,8 +269,8 @@ def calculate_hash(filepath, block_size=1048576, scan_id=None, active_tasks=None
                 
                 try:
                     while True:
-                        # Set timeout for read operation (e.g., 10 seconds)
-                        signal.alarm(10)
+                        # Set timeout for read operation (configurable, default 60 seconds)
+                        signal.alarm(IO_TIMEOUT_SECONDS)
                         data = f.read(block_size); # Read in chunks
                         signal.alarm(0) # Disable alarm after successful read
                         
@@ -101,8 +292,15 @@ def calculate_hash(filepath, block_size=1048576, scan_id=None, active_tasks=None
             if active_tasks and task_key:
                 try: del active_tasks[task_key]
                 except: pass
+            
+            # Store in cache
+            result = hasher.hexdigest()
+            try:
+                cache_hash(str(path), file_size, path.stat().st_mtime, full_hash=result)
+            except OSError:
+                pass  # Cache write failure shouldn't fail the scan
                 
-            return filepath, hasher.hexdigest() # Return path and the calculated hash
+            return filepath, result # Return path and the calculated hash
 
         except (TimeoutException, IOError, OSError) as e:
             error_msg = f"Attempt {attempt}/{max_retries} failed for {filepath}: {e}"
@@ -123,15 +321,27 @@ def calculate_hash(filepath, block_size=1048576, scan_id=None, active_tasks=None
             # Optional small delay before retry
             time.sleep(0.5)
 
-def calculate_hash_partial(filepath, block_size=4096):
+def calculate_hash_partial(filepath, block_size=None):
     """
     Calculates the xxHash of the first bytes AND last bytes of a file.
     Extremely effective for large video files where metadata might be at either end.
+    Checks hash cache first to avoid re-hashing unchanged files.
     """
-    hasher = xxhash.xxh3_64()
+    if block_size is None:
+        block_size = PARTIAL_HASH_KB * 1024  # Use configured partial hash size (default 512KB)
+    
     path = Path(filepath)
     try:
         size = path.stat().st_size
+        mtime = path.stat().st_mtime
+        
+        # Check cache first
+        cached_hash = get_cached_hash(str(path), size, mtime, hash_type='partial')
+        if cached_hash:
+            return str(path), cached_hash
+        
+        # Not in cache, compute hash
+        hasher = xxhash.xxh3_64()
         with path.open('rb') as f:
             # Read head
             head_data = f.read(block_size)
@@ -142,8 +352,13 @@ def calculate_hash_partial(filepath, block_size=4096):
                 f.seek(-block_size, os.SEEK_END)
                 tail_data = f.read(block_size)
                 hasher.update(tail_data)
+        
+        result = hasher.hexdigest()
+        
+        # Store in cache
+        cache_hash(str(path), size, mtime, partial_hash=result)
                 
-        return str(path), hasher.hexdigest()
+        return str(path), result
     except (IOError, OSError) as e:
         logging.warning(f"Could not partial hash file {filepath}: {e}")
         return str(path), None
@@ -422,8 +637,12 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
         update_progress(progress_info_managed, scan_id, {"status": "Starting scan...", "phase": "Finding Files", "percentage": 0, "processed_items": 0, "total_items": 0})
         logging.info(f"[Scan {scan_id}] Starting scan: paths={scan_paths}, dry_run={dry_run}, link_type={link_type}, save_auto={save_automatically}")
 
-        # --- Phase 1: File Discovery and Size Grouping ---
-        files_by_size = defaultdict(list) # {filesize: [{'path': ..., 'inode': ...}, ...]}
+        # --- Create Scan Metadata DB for disk-backed storage ---
+        scan_db_path = create_scan_metadata_db(scan_id)
+        import sqlite3
+        scan_conn = sqlite3.connect(scan_db_path, timeout=30.0)
+        
+        # --- Phase 1: File Discovery and Size Grouping (SQLite-backed) ---
         total_files_found = 0; total_bytes_scanned = 0
         update_progress(progress_info_managed, scan_id, {"phase": "Finding Files", "status": "Walking directories..."})
 
@@ -469,15 +688,20 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                                            if stat.S_ISLNK(stat_info.st_mode): continue
                                            filesize = stat_info.st_size; fileinode = stat_info.st_ino
                                            total_bytes_scanned += filesize
-                                           # Group files by size; only files meeting minimum size are candidates for duplicates
+                                           # Store in SQLite instead of in-memory dict (only files meeting minimum size)
                                            if filesize >= min_file_size and filesize > 0:
-                                               files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
+                                               try:
+                                                   scan_conn.execute(
+                                                       "INSERT OR IGNORE INTO discovered_files (filepath, filesize, inode, mtime) VALUES (?, ?, ?, ?)",
+                                                       (filepath, filesize, fileinode, stat_info.st_mtime)
+                                                   )
+                                               except sqlite3.IntegrityError:
+                                                   pass  # File already exists (shouldn't happen with UNIQUE constraint)
                                            total_files_found += 1
                                            
-                                           # Memory check every 1000 files
+                                           # Commit periodically to avoid huge transactions
                                            if total_files_found % 1000 == 0:
-                                               if check_memory_and_warn(scan_id, progress_info_managed) > 95:
-                                                   raise MemoryError("Memory usage exceeded 95%. Aborting scan to prevent system crash.")
+                                               scan_conn.commit()
                                                    
                                            # Check for pause/cancellation every 100 files
                                            if total_files_found % 100 == 0:
@@ -496,34 +720,47 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                                  filesize = stat_info.st_size; fileinode = stat_info.st_ino
                                  total_bytes_scanned += filesize
                                  if filesize >= min_file_size and filesize > 0:
-                                     files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
+                                     try:
+                                         scan_conn.execute(
+                                             "INSERT OR IGNORE INTO discovered_files (filepath, filesize, inode, mtime) VALUES (?, ?, ?, ?)",
+                                             (filepath, filesize, fileinode, stat_info.st_mtime)
+                                         )
+                                     except sqlite3.IntegrityError:
+                                         pass
                                  total_files_found += 1
                              except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
             except OSError as e:
                 logging.error(f"Error accessing root path {root_path}: {e}")
 
         # Update progress after directory walk
+        scan_conn.commit()  # Commit all Phase 1 inserts
         update_progress(progress_info_managed, scan_id, {"total_items": total_files_found, "processed_items": total_files_found, "status": "Directory scan complete"})
         logging.info(f"[Scan {scan_id}] Phase 1: Found {total_files_found} files. Size: {format_bytes(total_bytes_scanned)}.")
+        
+        # Save checkpoint for resume capability
+        save_checkpoint(scan_id, scan_paths, total_files_found, total_bytes_scanned)
 
         # --- Phase 1.5: Pre-hashing (Partial Hashing) ---
-        # Filter groups: only sizes with more than one file are potential duplicates
-        potential_duplicate_sizes = {s: f for s, f in files_by_size.items() if len(f) > 1}
-        # Create a flat list of file info dictionaries for files that need hashing
-        files_to_hash_info = [file_info for size, file_infos in potential_duplicate_sizes.items() for file_info in file_infos]
+        # Query SQLite for files with sizes that have multiple occurrences
+        cursor = scan_conn.cursor()
+        cursor.execute("""
+            SELECT filepath, filesize, inode, mtime
+            FROM discovered_files
+            WHERE filesize IN (
+                SELECT filesize FROM discovered_files GROUP BY filesize HAVING COUNT(*) > 1
+            )
+        """)
+        files_to_hash_info = [{'path': row[0], 'inode': row[1], 'mtime': row[3]} for row in cursor.fetchall()]
         potential_dupe_file_count = len(files_to_hash_info)
-        
-        # New structure for partial hashes: {(size, partial_hash): [file_info, ...]}
-        files_by_partial_hash = defaultdict(list)
         
         if potential_dupe_file_count > 0:
             update_progress(progress_info_managed, scan_id, {"phase": "Pre-Hashing", "status": f"Quick checking {potential_dupe_file_count} files...", "total_items": potential_dupe_file_count, "processed_items": 0})
             filepaths_to_hash = [info['path'] for info in files_to_hash_info]
             info_map = {info['path']: info for info in files_to_hash_info}
             
-            # Limit to 1 worker to prevent HDD thrashing (seeking between files)
-            num_workers = 1 
-            logging.info(f"[Scan {scan_id}] Starting optimized sequential scan (HDD safe) with {num_workers} worker.")
+            # Use configurable worker count (default 1 for HDD safety, can be increased for SSD)
+            num_workers = HASH_WORKERS
+            logging.info(f"[Scan {scan_id}] Starting optimized scan with {num_workers} worker(s).")
             
             partial_hashed_count = 0
             phase_start = time.time()
@@ -536,27 +773,37 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                          file_info = info_map[filepath]
                          try:
                              size = os.path.getsize(filepath)
-                             files_by_partial_hash[(size, partial_hash)].append(file_info)
+                             # Store in SQLite instead of in-memory dict
+                             scan_conn.execute(
+                                 "INSERT OR REPLACE INTO partial_hashes (filepath, filesize, partial_hash) VALUES (?, ?, ?)",
+                                 (filepath, size, partial_hash)
+                             )
                          except OSError: pass
                     
                     if partial_hashed_count % 100 == 0:
                          percentage = round((partial_hashed_count * 100) / potential_dupe_file_count)
                          eta = calculate_eta(phase_start, partial_hashed_count, potential_dupe_file_count)
                          update_progress(progress_info_managed, scan_id, {
-                             "status": f"Quick Check {partial_hashed_count}/{potential_dupe_file_count}", 
-                             "processed_items": partial_hashed_count, 
+                             "status": f"Quick Check {partial_hashed_count}/{potential_dupe_file_count}",
+                             "processed_items": partial_hashed_count,
                              "percentage": percentage,
                              "eta_seconds": eta
                          })
 
+            scan_conn.commit()  # Commit partial hash results
             logging.info(f"[Scan {scan_id}] Phase 1.5: Partial hashing complete.")
 
         # --- Phase 2: Full Hashing (Only for Partial Matches) ---
-        files_by_hash = defaultdict(list) # {(size, hash): [file_info, ...]}
-        
-        # Filter: Only groups where partial hash matches (count > 1) need full hashing
-        potential_full_hash_groups = {k: v for k, v in files_by_partial_hash.items() if len(v) > 1}
-        files_to_full_hash_info = [f for group in potential_full_hash_groups.values() for f in group]
+        # Query SQLite for files with matching partial hashes
+        cursor.execute("""
+            SELECT d.filepath, d.filesize, d.inode, d.mtime
+            FROM discovered_files d
+            JOIN partial_hashes p ON d.filepath = p.filepath
+            WHERE (p.filesize, p.partial_hash) IN (
+                SELECT filesize, partial_hash FROM partial_hashes GROUP BY filesize, partial_hash HAVING COUNT(*) > 1
+            )
+        """)
+        files_to_full_hash_info = [{'path': row[0], 'inode': row[1], 'mtime': row[3]} for row in cursor.fetchall()]
         full_hash_count_target = len(files_to_full_hash_info)
         
         hashed_file_count = 0
@@ -572,8 +819,8 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
             
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 # Map the calculate_hash function over the list of filepaths
-                # Create a partial function with the fixed arguments
-                hash_func = functools.partial(calculate_hash, block_size=1048576, scan_id=scan_id, active_tasks=active_tasks_managed)
+                # Create a partial function with the fixed arguments (block_size now uses global config)
+                hash_func = functools.partial(calculate_hash, scan_id=scan_id, active_tasks=active_tasks_managed)
                 hash_results = executor.map(hash_func, filepaths_to_full_hash)
                 # Process results as they complete
                 for filepath, filehash in hash_results:
@@ -584,12 +831,11 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                          try:
                              # Double-check size
                              size = os.path.getsize(filepath)
-                             # --- MODIFICATION START ---
-                             # Add the hash to the file_info dictionary
-                             file_info['hash'] = filehash
-                             # --- MODIFICATION END ---
-                             # Group files by (size, hash), storing the enriched file_info
-                             files_by_hash[(size, filehash)].append(file_info)
+                             # Store in SQLite instead of in-memory dict
+                             scan_conn.execute(
+                                 "INSERT OR REPLACE INTO full_hashes (filepath, filesize, full_hash, inode, mtime) VALUES (?, ?, ?, ?, ?)",
+                                 (filepath, size, filehash, file_info['inode'], file_info['mtime'])
+                             )
                          except OSError as e:
                              logging.warning(f"[Scan {scan_id}] Could not get size for {filepath} after hashing: {e}")
                     # Update progress periodically or on completion
@@ -597,18 +843,32 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                          percentage = round((hashed_file_count * 100) / full_hash_count_target) if full_hash_count_target else 100
                          eta = calculate_eta(phase_start, hashed_file_count, full_hash_count_target)
                          update_progress(progress_info_managed, scan_id, {
-                             "status": f"Deep Check {hashed_file_count}/{full_hash_count_target}", 
-                             "processed_items": hashed_file_count, 
+                             "status": f"Deep Check {hashed_file_count}/{full_hash_count_target}",
+                             "processed_items": hashed_file_count,
                              "percentage": percentage,
                              "eta_seconds": eta
                          })
+            scan_conn.commit()  # Commit full hash results
         logging.info(f"[Scan {scan_id}] Phase 2: Hashing complete. Processed {hashed_file_count} files.")
 
         # --- Phase 3: Analyzing Hashes and Identifying Duplicate Sets ---
         update_progress(progress_info_managed, scan_id, {"phase": "Analyzing Hashes", "status": "Identifying sets..."})
-        # Filter hash groups: only those with more than one file are actual duplicate sets
-        # Note: duplicate_sets_raw now contains lists of dicts like {'path':.., 'inode':.., 'hash':..}
-        duplicate_sets_raw = [files for files in files_by_hash.values() if len(files) > 1]
+        # Query SQLite for files with matching full hashes (actual duplicates)
+        cursor.execute("""
+            SELECT filepath, filesize, full_hash, inode, mtime
+            FROM full_hashes
+            WHERE (filesize, full_hash) IN (
+                SELECT filesize, full_hash FROM full_hashes GROUP BY filesize, full_hash HAVING COUNT(*) > 1
+            )
+            ORDER BY filesize, full_hash, filepath
+        """)
+        # Group results by (filesize, full_hash)
+        from collections import defaultdict
+        duplicate_sets_raw = defaultdict(list)
+        for row in cursor.fetchall():
+            filepath, filesize, full_hash, inode, mtime = row
+            duplicate_sets_raw[(filesize, full_hash)].append({'path': filepath, 'inode': inode, 'mtime': mtime, 'hash': full_hash})
+        duplicate_sets_raw = list(duplicate_sets_raw.values())
         
         # Sort files within each set by path, and then sort the sets themselves by the path of the first file.
         # This ensures deterministic order for both the frontend (formatted_results) and backend (raw_duplicates linking).
@@ -752,6 +1012,17 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
         # --- Internal Persistence (Always save for history) ---
         if final_status == "done":
              save_results_to_file(scan_id, result_data, INTERNAL_HISTORY_DIR)
+             # Evict large in-memory data after saving to disk to prevent OOM
+             # Keep only summary for progress API
+             if "duplicates" in result_data:
+                 result_data["duplicates"] = []
+             if "raw_duplicates" in result_data:
+                 result_data["raw_duplicates"] = None
+             # Update the managed dict with evicted data
+             scan_results_managed[scan_id] = result_data
+             logging.info(f"[Scan {scan_id}] Evicted large duplicate lists from memory after save.")
+             # Delete checkpoint on successful completion
+             delete_checkpoint(scan_id)
 
         # --- Auto-save Results (User-requested location) ---
         if save_automatically and final_status == "done":
@@ -769,6 +1040,14 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
     except InterruptedError: error_message = "Scan cancelled by user."; logging.info(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "cancelled", "phase": "Cancelled"}); result_data={"error": error_message, "summary": {"action_taken": "Scan cancelled by user."}, "duplicates": []}; scan_results_managed[scan_id] = result_data
     except MemoryError as e: error_message = f"Memory limit exceeded: {e}"; logging.error(f"[Scan {scan_id}] {error_message}"); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
     except Exception as e: error_message = f"Unexpected scan error: {e}"; logging.exception(f"[Scan {scan_id}] Error: "); update_progress(progress_info_managed, scan_id, {"status": "error", "phase": "error"}); result_data={"error": error_message, "summary": {}, "duplicates": []}; scan_results_managed[scan_id] = result_data
+    finally:
+        # Always cleanup scan metadata DB
+        try:
+            if 'scan_conn' in locals():
+                scan_conn.close()
+            cleanup_scan_metadata_db(scan_id)
+        except Exception as e:
+            logging.warning(f"[Scan {scan_id}] Error during cleanup: {e}")
 
 
 def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, link_results_managed, scan_results_managed, selected_indices=None, link_strategy='path'):

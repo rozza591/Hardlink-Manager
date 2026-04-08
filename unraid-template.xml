@@ -57,6 +57,34 @@
       <Name>LOG_LEVEL</Name>
       <Mode/>
     </Variable>
+    <Variable>
+      <Value>1</Value>
+      <Name>HASH_WORKERS</Name>
+      <Mode/>
+      <Description>Parallel hash workers: 1 for HDD, 2-4 for SSD</Description>
+      <Display>advanced</Display>
+    </Variable>
+    <Variable>
+      <Value>512</Value>
+      <Name>PARTIAL_HASH_KB</Name>
+      <Mode/>
+      <Description>Partial hash block size in KB (default 512)</Description>
+      <Display>advanced</Display>
+    </Variable>
+    <Variable>
+      <Value>8</Value>
+      <Name>HASH_BLOCK_MB</Name>
+      <Mode/>
+      <Description>Full hash read block size in MB (default 8)</Description>
+      <Display>advanced</Display>
+    </Variable>
+    <Variable>
+      <Value>60</Value>
+      <Name>IO_TIMEOUT_SECONDS</Name>
+      <Mode/>
+      <Description>I/O timeout per read operation in seconds (default 60)</Description>
+      <Display>advanced</Display>
+    </Variable>
   </Environment>
   <Labels/>
   <Config Name="Web Port" Target="5000" Default="5000" Mode="tcp" Description="The port for the Web UI" Type="Port" Display="always" Required="true" Mask="false">5000</Config>
