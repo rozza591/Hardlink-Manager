@@ -70,3 +70,38 @@ def test_scan_finds_duplicates(temp_dir_with_dupes):
     file_paths = [f["path"] for f in duplicates[0][1:]]
     assert any("file1.txt" in p for p in file_paths)
     assert any("file2.txt" in p for p in file_paths)
+
+
+def test_perform_link_rejects_invalid_selection(monkeypatch):
+    import app as app_module
+    app_module.scan_results = {
+        "scan": {
+            "summary": {"is_dry_run": True, "potential_savings": 1},
+            "raw_duplicates": [[{"path": "a"}, {"path": "b"}]],
+        }
+    }
+
+    response = app_module.app.test_client().post(
+        "/perform_link/scan",
+        data={"link_type": "hard", "selected_indices": "not-json"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_preview_requires_file_from_scan(tmp_path):
+    import app as app_module
+    allowed = tmp_path / "allowed.txt"
+    denied = tmp_path / "denied.txt"
+    allowed.write_text("allowed")
+    denied.write_text("denied")
+    allowed_stat = allowed.stat()
+    app_module.scan_results = {
+        "scan": {
+            "duplicates": [["Size: 7 Bytes", {"path": str(allowed), "device": allowed_stat.st_dev, "inode": allowed_stat.st_ino}]],
+        }
+    }
+    client = app_module.app.test_client()
+
+    assert client.get("/preview_file", query_string={"path": str(allowed)}).status_code == 200
+    assert client.get("/preview_file", query_string={"path": str(denied)}).status_code == 403

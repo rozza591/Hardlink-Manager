@@ -1,5 +1,6 @@
 import os
 import logging
+import stat
 import uuid
 import json
 from datetime import datetime
@@ -37,6 +38,18 @@ scan_results = {}
 link_progress = {}
 link_results = {}
 active_tasks = {} # Shared dict for micro-progress (e.g. hashing individual files)
+
+
+def _is_blocked_path(path):
+    real_path = os.path.realpath(path)
+    blocked_paths = ["/etc", "/var", "/root", "/proc", "/sys", "/dev"]
+    for blocked in blocked_paths:
+        try:
+            if os.path.commonpath([real_path, blocked]) == blocked:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 # --- Flask Routes ---
@@ -91,7 +104,7 @@ def run_scan():
 
     for p in scan_paths:
         if not p.strip(): continue
-        abs_p = os.path.abspath(p.strip())
+        abs_p = os.path.realpath(os.path.abspath(p.strip()))
         
         if not os.path.exists(abs_p):
             return jsonify({"error": f"Path does not exist: {p}"}), 400
@@ -99,8 +112,7 @@ def run_scan():
             return jsonify({"error": f"Path is not a directory: {p}"}), 400
             
         # Security checks
-        blocked = ["/etc", "/var", "/root", "/proc", "/sys", "/dev"]
-        if any(abs_p.startswith(b) for b in blocked):
+        if _is_blocked_path(abs_p):
              return jsonify({"error": f"Access denied to sensitive system path: {p}"}), 403
         
         sanitized_paths.append(abs_p)
@@ -219,6 +231,23 @@ def undo_link(op_id):
     p.start()
     return jsonify({"status": "undo_started", "op_id": op_id, "monitor_key": f"undo_{op_id}"})
 
+def _is_scanned_file(path, file_stat):
+    requested_path = os.path.abspath(path)
+    for result_proxy in scan_results.values():
+        if not result_proxy:
+            continue
+        result = dict(result_proxy)
+        for duplicate_set in result.get("duplicates", []):
+            for item in duplicate_set[1:]:
+                if not isinstance(item, dict) or os.path.abspath(item.get("path", "")) != requested_path:
+                    continue
+                device = item.get("device")
+                inode = item.get("inode")
+                if device is not None and inode is not None and (file_stat.st_dev, file_stat.st_ino) == (device, inode):
+                    return True
+    return False
+
+
 @app.route("/preview_file", methods=["GET"])
 def preview_file():
     path = request.args.get("path")
@@ -230,21 +259,30 @@ def preview_file():
     # Security check: For now, ensure it's not a sensitive system path 
     # and strictly check existence. In a more restricted environment, 
     # we would check if it's within a permitted root.
-    blocked_patterns = ["/etc/", "/var/", "/root/", "/proc/", "/sys/"]
-    if any(pattern in path for pattern in blocked_patterns):
+    if _is_blocked_path(path):
         logging.warning(f"Blocked preview attempt for sensitive path: {path}")
         return "Access denied to sensitive path", 403
 
-    if not os.path.exists(path): return "File not found", 404
-    if not os.path.isfile(path): return "Path is not a file", 400
-
-    # Check if text file (very basic check)
+    # Open with O_NOFOLLOW first, then authorize the opened descriptor via
+    # fstat so a path swap between the check and the read cannot redirect us.
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
     try:
-        # Read first 4KB
-        with open(path, 'r', errors='replace') as f:
-            content = f.read(4000)
-        return content
+        descriptor = os.open(path, flags)
+    except OSError:
+        return "File not found or not a regular file", 404
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            return "Path is not a regular file", 400
+        if not _is_scanned_file(path, file_stat):
+            return "File is not part of an available scan result", 403
+        with os.fdopen(descriptor, 'r', errors='replace') as f:
+            return f.read(4000)
     except Exception as e:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
         return f"Error reading file: {e}", 500
 
 @app.route("/get_progress/<scan_id>")
@@ -401,14 +439,13 @@ def perform_link_route(scan_id):
     # Parse optional selected indices (JSON list of integers)
     selected_indices_json = request.form.get("selected_indices")
     selected_indices = None
-    if selected_indices_json:
+    if selected_indices_json is not None:
         try:
             selected_indices = json.loads(selected_indices_json)
-            if not isinstance(selected_indices, list):
-                selected_indices = None
         except (ValueError, TypeError):
-            # If parsing fails, default to linking all (None)
-            selected_indices = None
+            return jsonify({"error": "selected_indices must be a JSON list of integers."}), 400
+        if not isinstance(selected_indices, list) or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in selected_indices):
+            return jsonify({"error": "selected_indices must be a JSON list of non-negative integers."}), 400
 
     # Validate link type
     if not link_type or link_type not in ['hard', 'soft', 'delete']:
@@ -434,6 +471,11 @@ def perform_link_route(scan_id):
     # 3. Ensure there were potential savings (i.e., linkable sets found)
     if original_summary.get("potential_savings", 0) <= 0:
         return jsonify({"error": "No linkable duplicate sets found in the original scan (all might be already linked)."}), 400
+    raw_duplicates = original_scan_result["raw_duplicates"]
+    if selected_indices is not None and any(i >= len(raw_duplicates) for i in selected_indices):
+        return jsonify({"error": "selected_indices contains an index outside the scan results."}), 400
+    if link_strategy not in ['path', 'oldest', 'newest', 'shortest_path']:
+        return jsonify({"error": "Invalid link strategy."}), 400
 
     # Generate a unique ID for this linking operation
     link_op_id = str(uuid.uuid4())

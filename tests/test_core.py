@@ -1,7 +1,7 @@
 import os
 import pytest
 import xxhash
-from core import format_bytes, calculate_hash, update_progress
+from core import format_bytes, calculate_hash, update_progress, perform_linking_logic, link_process_worker, undo_link_operation
 
 # --- Tests for Helper Functions ---
 
@@ -119,3 +119,86 @@ def test_ignore_logic(tmp_path):
     # Or strict dir name matching? Plan said "Directory name in ignore_dirs"
     assert is_ignored("/path/to/ignore_dir/file.txt", ["ignore_dir"], []) == True
     assert is_ignored("/path/to/clean/file.txt", ["ignore_dir"], []) == False
+
+
+def _file_info(path):
+    stat_info = path.stat()
+    return {
+        "path": str(path),
+        "inode": stat_info.st_ino,
+        "device": stat_info.st_dev,
+        "size": stat_info.st_size,
+        "mtime": stat_info.st_mtime,
+        "hash": xxhash.xxh3_64(path.read_bytes()).hexdigest(),
+    }
+
+
+def test_link_failure_preserves_duplicate(tmp_path, monkeypatch):
+    import core
+    original = tmp_path / "original.txt"
+    duplicate = tmp_path / "duplicate.txt"
+    original.write_text("same")
+    duplicate.write_text("same")
+    monkeypatch.setattr(core, "UNDO_DIR", tmp_path / "undo")
+    monkeypatch.setattr(core.os, "link", lambda *args: (_ for _ in ()).throw(OSError("failed")))
+
+    result = perform_linking_logic("failure", "hard", [[_file_info(original), _file_info(duplicate)]])
+
+    assert result["files_failed"] == 1
+    assert duplicate.read_text() == "same"
+
+
+def test_link_rejects_file_changed_since_scan(tmp_path, monkeypatch):
+    import core
+    original = tmp_path / "original.txt"
+    duplicate = tmp_path / "duplicate.txt"
+    original.write_text("same")
+    duplicate.write_text("same")
+    duplicate_info = _file_info(duplicate)
+    duplicate.write_text("changed")
+    monkeypatch.setattr(core, "UNDO_DIR", tmp_path / "undo")
+
+    result = perform_linking_logic("stale", "hard", [[_file_info(original), duplicate_info]])
+
+    assert result["files_failed"] == 1
+    assert duplicate.read_text() == "changed"
+
+
+def test_delete_verification_and_selected_savings(tmp_path, monkeypatch):
+    import core
+    original = tmp_path / "original.txt"
+    duplicate = tmp_path / "duplicate.txt"
+    original.write_text("same")
+    duplicate.write_text("same")
+    duplicate_set = [_file_info(original), _file_info(duplicate)]
+    scan_results = {
+        "scan": {
+            "raw_duplicates": [duplicate_set],
+            "summary": {"potential_savings": 999, "is_dry_run": True},
+        }
+    }
+    progress = {}
+    results = {}
+    monkeypatch.setattr(core, "UNDO_DIR", tmp_path / "undo")
+
+    link_process_worker("delete", "scan", "delete", progress, results, scan_results, [0])
+
+    assert results["delete"]["verification_failed"] == 0
+    assert results["delete"]["space_saved"] == len("same")
+    assert not duplicate.exists()
+
+
+def test_undo_uses_backup_and_replaces_atomically(tmp_path, monkeypatch):
+    import core
+    original = tmp_path / "original.txt"
+    duplicate = tmp_path / "duplicate.txt"
+    original.write_text("before")
+    duplicate.write_text("before")
+    monkeypatch.setattr(core, "UNDO_DIR", tmp_path / "undo")
+    perform_linking_logic("undo", "hard", [[_file_info(original), _file_info(duplicate)]])
+    original.write_text("after")
+
+    result = undo_link_operation("undo")
+
+    assert result["errors"] == 0
+    assert duplicate.read_text() == "before"

@@ -12,6 +12,7 @@ from concurrent.futures import ProcessPoolExecutor
 import functools
 import shutil
 import signal
+import uuid
 
 class TimeoutException(Exception): pass
 
@@ -279,6 +280,39 @@ def save_results_to_file(scan_id, results_data, output_dir):
          logging.error(f"[Scan {scan_id}] Auto-save Error: Failed to save JSON results to {filepath}: {e}")
          return False
 
+def _validate_scanned_file(file_info):
+    path = file_info['path']
+    stat_info = os.lstat(path)
+    if not stat.S_ISREG(stat_info.st_mode):
+        raise OSError(f"File is no longer a regular file: {path}")
+    expected_device = file_info.get('device')
+    expected_inode = file_info.get('inode')
+    if expected_device is not None and expected_inode is not None and (stat_info.st_dev, stat_info.st_ino) != (expected_device, expected_inode):
+        raise OSError(f"File identity changed since scan: {path}")
+    expected_size = file_info.get('size')
+    if expected_size is not None and stat_info.st_size != expected_size:
+        raise OSError(f"File size changed since scan: {path}")
+    expected_hash = file_info.get('hash')
+    if expected_hash:
+        _, current_hash = calculate_hash(path)
+        if current_hash != expected_hash:
+            raise OSError(f"File content changed since scan: {path}")
+    return stat_info
+
+
+def _operation_backup_path(op_id, source_path):
+    backup_dir = UNDO_DIR / f"backup_{op_id}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    return backup_dir / f"{uuid.uuid4().hex}_{Path(source_path).name}"
+
+
+def _create_backup(backup_path, source_path):
+    try:
+        os.link(source_path, backup_path)
+    except OSError:
+        shutil.copy2(source_path, backup_path)
+
+
 def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verification_step=True, link_progress_managed=None):
     """
     Core logic to replace duplicate files with hard or soft links.
@@ -324,43 +358,59 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
         # Assume the first file in the sorted list is the original to keep
         original_path = dupe_set_info[0]['path']
 
+        # Validate the original once per set instead of once per duplicate,
+        # since _validate_scanned_file performs a full file hash.
+        try:
+            original_stat = _validate_scanned_file(dupe_set_info[0])
+        except OSError as e:
+            set_failures = len(dupe_set_info) - 1
+            files_failed += set_failures
+            links_attempted += set_failures
+            logging.error(f"[{op_id}] Skipping set, original invalid '{original_path}': {e}")
+            continue
+
         # Iterate through the rest of the files in the set (the duplicates to replace)
         for duplicate_item in dupe_set_info[1:]:
             duplicate_path = duplicate_item['path']
             links_attempted += 1
             try:
-                 # --- Link Creation Steps ---
-                 # 1. Check if original file still exists (important!)
-                 if not os.path.exists(original_path):
-                      raise FileNotFoundError(f"Original file missing: {original_path}")
-                
-                 # 2. Check for filesystem boundary (Hardlinks only)
-                 if link_type == 'hard':
-                     try:
-                         orig_dev = os.stat(original_path).st_dev
-                         dest_dir = os.path.dirname(duplicate_path)
-                         dest_dev = os.stat(dest_dir).st_dev
-                         if orig_dev != dest_dev:
-                             raise OSError(f"Cross-device link not permitted. Original: {orig_dev}, Target Dir: {dest_dev}")
-                     except OSError as dev_err:
-                         raise OSError(f"Boundary check failed: {dev_err}")
+                 duplicate_stat = _validate_scanned_file(duplicate_item)
+                 if original_stat.st_size != duplicate_stat.st_size:
+                     raise OSError(f"Files no longer have matching sizes: {original_path}, {duplicate_path}")
+                 if (original_stat.st_dev, original_stat.st_ino) == (duplicate_stat.st_dev, duplicate_stat.st_ino):
+                     logging.info(f"[{op_id}] '{duplicate_path}' already shares inode with '{original_path}', skipping.")
+                     continue
+                 if link_type == 'hard' and original_stat.st_dev != duplicate_stat.st_dev:
+                     raise OSError(f"Cross-device link not permitted. Original: {original_stat.st_dev}, Target: {duplicate_stat.st_dev}")
 
-                 # 3. Remove the duplicate file (use lexists to handle potential broken links)
-                 if os.path.lexists(duplicate_path):
-                      os.remove(duplicate_path)
+                 backup_path = _operation_backup_path(op_id, duplicate_path)
+                 if link_type == 'delete':
+                     # Move the file into the undo store: single syscall on the
+                     # same filesystem, falling back to copy+remove cross-device.
+                     try:
+                         os.rename(duplicate_path, backup_path)
+                     except OSError:
+                         shutil.copy2(duplicate_path, backup_path)
+                         os.remove(duplicate_path)
                  else:
-                      # Log if the duplicate was already gone (might happen in rare cases)
-                      logging.warning(f"[{op_id}] Duplicate path did not exist before linking: {duplicate_path}")
-                 # 4. Create the hard or soft link, or just delete if that was the request
-                 if link_type != 'delete':
-                     link_function(original_path, duplicate_path)
-                 
-                 files_linked += 1 # Increment success counter
-                 
-                 # Record for undo
+                     _create_backup(backup_path, duplicate_path)
+                     temp_path = os.path.join(os.path.dirname(duplicate_path), f".hardlink-manager-{uuid.uuid4().hex}")
+                     try:
+                         link_function(original_path, temp_path)
+                         os.replace(temp_path, duplicate_path)
+                     except OSError:
+                         # The duplicate was never removed; just clean up temp and backup.
+                         if os.path.lexists(temp_path):
+                             os.remove(temp_path)
+                         if os.path.exists(backup_path):
+                             os.remove(backup_path)
+                         raise
+
+                 files_linked += 1
                  undo_log.append({
                      "path": duplicate_path,
                      "original": original_path,
+                     "backup": str(backup_path),
                      "type": link_type,
                      "timestamp": time.time()
                  })
@@ -384,13 +434,21 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
                      })
 
     # Save undo log
+    undo_saved = False
     if undo_log:
         try:
             log_path = os.path.join(UNDO_DIR, f"undo_{op_id}.json")
-            with open(log_path, 'w') as f:
+            temp_log_path = f"{log_path}.{uuid.uuid4().hex}.tmp"
+            with open(temp_log_path, 'w') as f:
                 json.dump(undo_log, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_log_path, log_path)
+            undo_saved = True
         except Exception as e:
             logging.error(f"[{op_id}] Failed to save undo log: {e}")
+            if 'temp_log_path' in locals() and os.path.exists(temp_log_path):
+                os.remove(temp_log_path)
 
     # Final summary message
     action_taken = f"{link_op_name} complete. Linked: {files_linked}, Failed: {files_failed}."
@@ -401,7 +459,7 @@ def perform_linking_logic(op_id, link_type, duplicate_sets_with_info, is_verific
         "files_linked": files_linked, 
         "files_failed": files_failed, 
         "op_name": link_op_name,
-        "undo_available": len(undo_log) > 0
+        "undo_available": undo_saved
     }
     return summary
 
@@ -471,7 +529,7 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                                            total_bytes_scanned += filesize
                                            # Group files by size; only files meeting minimum size are candidates for duplicates
                                            if filesize >= min_file_size and filesize > 0:
-                                               files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
+                                               files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'device': stat_info.st_dev, 'size': filesize, 'mtime': stat_info.st_mtime}) # Store path and inode initially
                                            total_files_found += 1
                                            
                                            # Memory check every 1000 files
@@ -496,7 +554,7 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                                  filesize = stat_info.st_size; fileinode = stat_info.st_ino
                                  total_bytes_scanned += filesize
                                  if filesize >= min_file_size and filesize > 0:
-                                     files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'mtime': stat_info.st_mtime}) # Store path and inode initially
+                                     files_by_size[filesize].append({'path': filepath, 'inode': fileinode, 'device': stat_info.st_dev, 'size': filesize, 'mtime': stat_info.st_mtime}) # Store path and inode initially
                                  total_files_found += 1
                              except OSError as e: logging.warning(f"[Scan {scan_id}] Cannot access {filepath}: {e}")
             except OSError as e:
@@ -635,7 +693,7 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
                      stat_info = os.lstat(file_info['path'])
                      # Ensure it's a regular file (not a symlink or dir changed during scan)
                      if not stat.S_ISLNK(stat_info.st_mode) and os.path.isfile(file_info['path']):
-                          inodes.add(stat_info.st_ino) # Collect inodes
+                          inodes.add((stat_info.st_dev, stat_info.st_ino)) # Collect inodes
                           # Store the whole file_info dict (including hash)
                           valid_files_in_set.append(file_info)
                           if filesize == 0: filesize = stat_info.st_size # Get size from first valid file
@@ -711,7 +769,7 @@ def run_manual_scan_and_link(scan_id, scan_paths, dry_run, link_type, save_autom
             update_progress(progress_info_managed, scan_id, {"phase": f"{link_type.capitalize()} Linking", "status": "Preparing to link..."})
             # Filter the raw sets to only include those not already linked
             # Note: inode check is still the definitive way to know if linking is needed
-            sets_to_link_raw = [s for s in duplicate_sets_raw if len(s) > 1 and len(set(fi['inode'] for fi in s)) > 1]
+            sets_to_link_raw = [s for s in duplicate_sets_raw if len(s) > 1 and len(set((fi.get('device'), fi['inode']) for fi in s)) > 1]
             if sets_to_link_raw:
                 # Sort sets and files within sets by path before linking for consistency
                 sorted_sets_to_link = [sorted(s, key=lambda x: x['path']) for s in sets_to_link_raw]
@@ -776,7 +834,7 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
     Worker function run in a background process when linking is triggered from the UI
     after a dry run. It performs linking and then verifies the results.
     """
-    files_verified = 0; verification_failed = 0; final_error = None; link_summary = {}; potential_savings = 0
+    files_verified = 0; verification_failed = 0; final_error = None; link_summary = {}; verified_savings = 0
     try:
          logging.info(f"[LinkOp {link_op_id}] Worker process started for scan {scan_id}, type {link_type}. Selected indices: {len(selected_indices) if selected_indices else 'All'}")
 
@@ -802,9 +860,7 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
                      filtered_sets.append(s)
              duplicate_sets_to_link = filtered_sets
 
-         # Get summary info (like potential savings) from the original scan
-         original_summary = dict(original_scan_result.get("summary", {}))
-         potential_savings = original_summary.get("potential_savings", 0)
+         verified_savings = 0
          
          # Sort sets based on strategy
          def get_sort_key(file_info):
@@ -816,7 +872,15 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
 
          reverse_sort = (link_strategy == 'newest')
          # Ensure sets are sorted for consistent linking (original is index 0)
-         sorted_sets_to_link = [sorted(s, key=get_sort_key, reverse=reverse_sort) for s in duplicate_sets_to_link if isinstance(s, list) and len(s) > 1]
+         sorted_sets_to_link = []
+         for duplicate_set in duplicate_sets_to_link:
+             if not isinstance(duplicate_set, list) or len(duplicate_set) < 2:
+                 continue
+             sorted_set = sorted(duplicate_set, key=get_sort_key, reverse=reverse_sort)
+             original_identity = (sorted_set[0].get('device'), sorted_set[0].get('inode'))
+             linkable_items = [item for item in sorted_set[1:] if (item.get('device'), item.get('inode')) != original_identity]
+             if linkable_items:
+                 sorted_sets_to_link.append([sorted_set[0]] + linkable_items)
 
          # --- Step 1: Perform Linking ---
          # Call the core linking logic, providing the link progress dict for updates
@@ -857,9 +921,10 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
                         if link_type == 'hard':
                              # Verify Hard Link: Check path exists, is a file, and shares inode with original
                              if os.path.lexists(linked_path): # Use lexists to check link itself
-                                 linked_inode = os.lstat(linked_path).st_ino
+                                 linked_stat = os.lstat(linked_path)
+                                 linked_inode = linked_stat.st_ino
                                  # Use isfile to ensure it's not e.g. a broken link pointing to a dir
-                                 if linked_inode == original_inode and os.path.isfile(linked_path):
+                                 if linked_stat.st_dev == os.stat(original_path).st_dev and linked_inode == original_inode and os.path.isfile(linked_path):
                                       files_verified += 1; verified = True
                                  else:
                                      logging.warning(f"[LinkOp {link_op_id}] Verify FAIL (inode/type mismatch): '{linked_path}' (Inode: {linked_inode if 'linked_inode' in locals() else 'N/A'}) != Orig Inode: ({original_inode}) or not a file.")
@@ -880,6 +945,11 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
                              else:
                                  # Path exists but is not a symbolic link
                                  logging.warning(f"[LinkOp {link_op_id}] Verify FAIL (not a link): '{linked_path}' exists but is not a symbolic link.")
+                        elif link_type == 'delete':
+                             if not os.path.lexists(linked_path):
+                                 files_verified += 1; verified = True
+                             else:
+                                 logging.warning(f"[LinkOp {link_op_id}] Verify FAIL (not deleted): '{linked_path}' still exists.")
                    except OSError as verify_err:
                         # Handle errors during verification checks (e.g., permissions)
                         logging.error(f"[LinkOp {link_op_id}] Verify ERROR checking link status for '{linked_path}': {verify_err}")
@@ -887,8 +957,14 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
                         # Catch unexpected errors during verification
                         logging.error(f"[LinkOp {link_op_id}] Unexpected error during verification of '{linked_path}': {general_err}")
 
-                   # If verification failed for any reason for this link
-                   if not verified: verification_failed += 1
+                   if verified:
+                        # Re-stat for the current on-disk size where the file still exists.
+                        try:
+                            verified_savings += linked_info.get('size') if link_type == 'delete' else os.lstat(linked_path).st_size
+                        except (OSError, TypeError):
+                            verified_savings += linked_info.get('size', 0) or 0
+                   else:
+                        verification_failed += 1
 
                    # Update verification progress periodically
                    if verification_items_processed % 10 == 0 or verification_items_processed == total_items_to_verify:
@@ -905,8 +981,8 @@ def link_process_worker(link_op_id, scan_id, link_type, link_progress_managed, l
              "files_failed": link_summary.get("files_failed", 0),
              "files_verified": files_verified,
              "verification_failed": verification_failed,
-             # Report actual space saved only if verification passed completely
-             "space_saved": potential_savings if verification_failed == 0 else "Verification failed, savings uncertain",
+             # Report space actually freed by verified operations
+             "space_saved": verified_savings,
              # Combine any linking error with potential verification failure message
              "error": final_error or (f"Verification failed for {verification_failed} items." if verification_failed > 0 else None)
          }
@@ -956,6 +1032,7 @@ def undo_link_operation(op_id, progress_dict=None):
     total = len(actions)
     restored = 0
     errors = 0
+    failed_actions = []
     
     # Reverse order to undo last actions first
     for i, action in enumerate(reversed(actions)):
@@ -963,25 +1040,46 @@ def undo_link_operation(op_id, progress_dict=None):
         original = action['original']
         
         try:
-            # Check if current path is a link (or file that shouldn't be there?)
-            # Strategy: Delete 'path' and copy 'original' to 'path'
-            
-            if os.path.lexists(path):
-                os.remove(path)
-                
-            shutil.copy2(original, path)
+            backup = action.get('backup')
+            if backup and not os.path.exists(backup):
+                raise FileNotFoundError(f"Undo backup missing: {backup}")
+            restore_source = backup or original
+            temp_path = os.path.join(os.path.dirname(path), f".hardlink-manager-undo-{uuid.uuid4().hex}")
+            try:
+                shutil.copy2(restore_source, temp_path)
+                os.replace(temp_path, path)
+            finally:
+                if os.path.lexists(temp_path):
+                    os.remove(temp_path)
+            if backup and os.path.exists(backup):
+                os.remove(backup)
             restored += 1
             
         except Exception as e:
             logging.error(f"Undo failed for {path}: {e}")
             errors += 1
+            failed_actions.append(action)
             
         if progress_dict:
+             processed = i + 1
              update_progress(progress_dict, f"undo_{op_id}", {
-                 "status": f"Undoing {restored}/{total}...",
-                 "processed_items": restored,
+                 "status": f"Undoing {processed}/{total}...",
+                 "processed_items": processed,
                  "total_items": total,
-                 "percentage": int((restored/total)*100)
+                 "percentage": int((processed/total)*100) if total else 100
              })
 
-    return {"status": "success", "restored": restored, "errors": errors}
+    if failed_actions:
+        temp_log_path = f"{log_path}.{uuid.uuid4().hex}.tmp"
+        with open(temp_log_path, 'w') as f:
+            json.dump(list(reversed(failed_actions)), f, indent=4)
+        os.replace(temp_log_path, log_path)
+    else:
+        os.remove(log_path)
+        backup_dir = UNDO_DIR / f"backup_{op_id}"
+        if backup_dir.exists():
+            backup_dir.rmdir()
+    status = "done" if not errors else "error"
+    if progress_dict is not None:
+        update_progress(progress_dict, f"undo_{op_id}", {"status": status, "percentage": 100})
+    return {"status": "success" if not errors else "partial", "restored": restored, "errors": errors}
